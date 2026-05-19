@@ -27,6 +27,9 @@ The MVP flow is:
 - Overpayment blocking by default, configurable in settings.
 - Exception status and error message capture.
 - Manual retry and ignore actions from the transaction form.
+- Role-gated manual transaction imports.
+- Dedicated `M-Pesa Reconciliation Manager` role fixture.
+- Fail-closed callback token validation.
 
 ## Settings
 
@@ -86,6 +89,8 @@ If valid, the Payment Entry is allocated to the Sales Invoice.
 
 If no Sales Invoice matches and `Allow Customer Phone Matching` is enabled, the app normalizes the M-Pesa phone number and checks `Customer.mobile_no` and `Customer.phone`.
 
+It also checks linked Contact records where the Contact is linked to a Customer.
+
 Supported Kenyan formats include:
 
 - `254712345678`
@@ -116,6 +121,8 @@ The callback accepts JSON or form-encoded payloads. It returns a top-level Daraj
 
 The callback token is compared with `Callback Secret / Token` in `M-Pesa Settings`.
 
+The callback fails closed if no callback token is configured.
+
 ### Manual Import
 
 ```text
@@ -123,6 +130,12 @@ The callback token is compared with `Callback Secret / Token` in `M-Pesa Setting
 ```
 
 Pass a `payload` argument containing the raw M-Pesa JSON.
+
+Manual imports require one of these roles:
+
+- `System Manager`
+- `Accounts Manager`
+- `M-Pesa Reconciliation Manager`
 
 Example payload:
 
@@ -153,6 +166,8 @@ Example payload:
 
 Duplicate callbacks do not create another Payment Entry. The existing transaction is returned.
 
+If a duplicate callback arrives concurrently while the first request is inserting the same receipt number, the unique receipt constraint is caught and the existing transaction is returned.
+
 ## Payment Entry Behaviour
 
 For invoice matches:
@@ -175,6 +190,8 @@ For customer phone matches:
 - The receipt is posted against the matched Customer.
 - The amount remains unallocated for later reconciliation.
 
+If Payment Entry submission fails after the draft Payment Entry is inserted, the transaction keeps the draft Payment Entry link so a retry can submit the existing document instead of creating another draft.
+
 ## Development Notes
 
 This repository currently contains the custom app source only. Full integration testing requires an ERPNext/Frappe bench site with the app installed.
@@ -187,4 +204,3 @@ python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_settings/m_pesa_
 python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_transaction/m_pesa_transaction.json
 python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_payment_account_mapping/m_pesa_payment_account_mapping.json
 ```
-

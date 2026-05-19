@@ -67,7 +67,14 @@ def save_transaction_from_payload(payload):
             **data,
         }
     )
-    transaction.insert(ignore_permissions=True)
+    try:
+        transaction.insert(ignore_permissions=True)
+    except frappe.DuplicateEntryError:
+        existing = frappe.db.exists("M-Pesa Transaction", {"mpesa_receipt_number": receipt})
+        if existing:
+            return frappe.get_doc("M-Pesa Transaction", existing), True
+        raise
+
     return transaction, False
 
 
@@ -106,7 +113,8 @@ def reconcile_transaction(transaction_name, manual=False):
         transaction.save(ignore_permissions=True)
 
         if transaction.payment_entry:
-            transaction.status = STATUS_RECONCILED
+            _complete_existing_payment_entry(transaction, settings)
+            transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
             transaction.save(ignore_permissions=True)
             return transaction
 
@@ -117,7 +125,6 @@ def reconcile_transaction(transaction_name, manual=False):
             invoice=invoice,
             customer=customer,
         )
-        transaction.payment_entry = payment_entry.name
         transaction.status = STATUS_RECONCILED
         transaction.error_message = None
         transaction.save(ignore_permissions=True)
@@ -133,45 +140,81 @@ def reconcile_transaction(transaction_name, manual=False):
 
 def create_payment_entry(transaction, settings, payment_mapping, invoice=None, customer=None):
     amount = flt(transaction.amount)
-
-    payment_entry = frappe.new_doc("Payment Entry")
-    payment_entry.payment_type = "Receive"
-    payment_entry.company = invoice.company if invoice else settings.company
-    payment_entry.posting_date = getdate(transaction.transaction_date) if transaction.transaction_date else getdate()
-    payment_entry.mode_of_payment = payment_mapping["mode_of_payment"]
-    payment_entry.party_type = "Customer"
-    payment_entry.party = customer or invoice.customer
-    payment_entry.paid_from = (
-        invoice.debit_to
+    payment_entry = (
+        _get_invoice_payment_entry(transaction, payment_mapping, invoice)
         if invoice
-        else _get_customer_receivable_account(customer, settings, payment_mapping)
+        else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
     )
-    payment_entry.paid_to = payment_mapping["paid_to_account"]
-    payment_entry.paid_amount = amount
-    payment_entry.received_amount = amount
-    payment_entry.reference_no = transaction.mpesa_receipt_number
-    payment_entry.reference_date = payment_entry.posting_date
-
-    if invoice:
-        outstanding = flt(invoice.outstanding_amount)
-        allocated_amount = min(amount, outstanding)
-        payment_entry.append(
-            "references",
-            {
-                "reference_doctype": "Sales Invoice",
-                "reference_name": invoice.name,
-                "total_amount": invoice.grand_total,
-                "outstanding_amount": outstanding,
-                "allocated_amount": allocated_amount,
-            },
-        )
 
     payment_entry.insert(ignore_permissions=True)
+    transaction.payment_entry = payment_entry.name
+    transaction.save(ignore_permissions=True)
 
     if settings.auto_submit_payment_entry:
         payment_entry.submit()
 
     return payment_entry
+
+
+def _get_invoice_payment_entry(transaction, payment_mapping, invoice):
+    try:
+        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+        payment_entry = get_payment_entry(
+            "Sales Invoice",
+            invoice.name,
+            party_amount=flt(transaction.amount),
+            bank_amount=flt(transaction.amount),
+            payment_type="Receive",
+        )
+    except Exception:
+        payment_entry = _new_payment_entry()
+
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, invoice.company, invoice.customer)
+    payment_entry.paid_from = invoice.debit_to
+
+    payment_entry.set("references", [])
+    outstanding = flt(invoice.outstanding_amount)
+    payment_entry.append(
+        "references",
+        {
+            "reference_doctype": "Sales Invoice",
+            "reference_name": invoice.name,
+            "total_amount": invoice.grand_total,
+            "outstanding_amount": outstanding,
+            "allocated_amount": min(flt(transaction.amount), outstanding),
+        },
+    )
+    return payment_entry
+
+
+def _get_customer_payment_entry(transaction, settings, payment_mapping, customer):
+    payment_entry = _new_payment_entry()
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, settings.company, customer)
+    payment_entry.paid_from = _get_customer_receivable_account(customer, settings, payment_mapping)
+    return payment_entry
+
+
+def _new_payment_entry():
+    payment_entry = frappe.new_doc("Payment Entry")
+    payment_entry.payment_type = "Receive"
+    payment_entry.party_type = "Customer"
+    return payment_entry
+
+
+def _apply_common_payment_fields(payment_entry, transaction, payment_mapping, company, customer):
+    amount = flt(transaction.amount)
+
+    payment_entry.company = company
+    payment_entry.posting_date = getdate(transaction.transaction_date) if transaction.transaction_date else getdate()
+    payment_entry.mode_of_payment = payment_mapping["mode_of_payment"]
+    payment_entry.party_type = "Customer"
+    payment_entry.party = customer
+    payment_entry.paid_to = payment_mapping["paid_to_account"]
+    payment_entry.paid_amount = amount
+    payment_entry.received_amount = amount
+    payment_entry.reference_no = transaction.mpesa_receipt_number
+    payment_entry.reference_date = payment_entry.posting_date
 
 
 def get_payment_account_mapping(transaction, settings):
@@ -264,12 +307,45 @@ def _get_valid_customer_by_phone(transaction, settings):
 
 
 def _find_customers_by_phone(phone):
-    matches = []
-    for customer in frappe.get_all("Customer", fields=["name", "mobile_no", "phone"]):
-        if normalize_phone(customer.mobile_no) == phone or normalize_phone(customer.phone) == phone:
-            matches.append(customer.name)
+    matches = set()
+    variants = get_phone_variants(phone)
 
-    return matches
+    for customer in frappe.get_all(
+        "Customer",
+        filters={"mobile_no": ["in", variants]},
+        pluck="name",
+    ):
+        matches.add(customer)
+
+    for customer in frappe.get_all(
+        "Customer",
+        filters={"phone": ["in", variants]},
+        pluck="name",
+    ):
+        matches.add(customer)
+
+    for customer in _find_customers_by_contact_phone(variants):
+        matches.add(customer)
+
+    return list(matches)
+
+
+def _find_customers_by_contact_phone(variants):
+    if not variants:
+        return []
+
+    return frappe.db.sql(
+        """
+        select distinct dl.link_name
+        from `tabContact` contact
+        inner join `tabDynamic Link` dl on dl.parent = contact.name
+        where dl.parenttype = 'Contact'
+            and dl.link_doctype = 'Customer'
+            and (contact.mobile_no in %(variants)s or contact.phone in %(variants)s)
+        """,
+        {"variants": tuple(variants)},
+        pluck=True,
+    )
 
 
 def _get_customer_receivable_account(customer, settings, payment_mapping):
@@ -294,6 +370,31 @@ def normalize_phone(value):
     if digits.startswith("7") and len(digits) == 9:
         return f"254{digits}"
     return digits
+
+
+def get_phone_variants(value):
+    phone = normalize_phone(value)
+    if not phone:
+        return []
+
+    variants = {phone}
+    if phone.startswith("254") and len(phone) == 12:
+        local = f"0{phone[3:]}"
+        short = phone[3:]
+        variants.update({local, short, f"+{phone}", f"+254 {short[:3]} {short[3:6]} {short[6:]}"})
+
+    return list(variants)
+
+
+def _complete_existing_payment_entry(transaction, settings):
+    payment_entry = frappe.get_doc("Payment Entry", transaction.payment_entry)
+    if payment_entry.docstatus == 0 and settings.auto_submit_payment_entry:
+        payment_entry.submit()
+
+
+def _is_submitted_or_draft_allowed(transaction, settings):
+    payment_entry = frappe.get_doc("Payment Entry", transaction.payment_entry)
+    return payment_entry.docstatus == 1 or not settings.auto_submit_payment_entry
 
 
 def _save_exception_transaction(data, error_message):

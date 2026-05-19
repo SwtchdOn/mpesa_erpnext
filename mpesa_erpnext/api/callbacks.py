@@ -24,7 +24,10 @@ def _validate_callback_token(token):
     settings = frappe.get_single("M-Pesa Settings")
     expected = settings.get_password("callback_secret") if settings.callback_secret else None
 
-    if expected and token != expected:
+    if not expected:
+        frappe.throw("M-Pesa callback token is not configured", frappe.PermissionError)
+
+    if token != expected:
         frappe.throw("Invalid callback token", frappe.PermissionError)
 
 

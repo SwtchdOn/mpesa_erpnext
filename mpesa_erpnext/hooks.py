@@ -9,3 +9,9 @@ doctype_js = {
     "M-Pesa Transaction": "public/js/m_pesa_transaction.js",
 }
 
+fixtures = [
+    {
+        "dt": "Role",
+        "filters": [["role_name", "=", "M-Pesa Reconciliation Manager"]],
+    },
+]
