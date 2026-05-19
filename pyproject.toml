@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpesa_erpnext"
+version = "0.0.1"
+description = "ERPNext M-Pesa Paybill to Sales Invoice reconciliation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mpesa_erpnext*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.js", "*.txt"]
