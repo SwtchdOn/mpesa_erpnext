@@ -1,0 +1,62 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-05-19 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "paybill_number",
+    "is_default",
+    "mode_of_payment",
+    "paid_to_account",
+    "receivable_account"
+  ],
+  "fields": [
+    {
+      "fieldname": "paybill_number",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Paybill Number"
+    },
+    {
+      "default": "0",
+      "fieldname": "is_default",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Default"
+    },
+    {
+      "fieldname": "mode_of_payment",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Mode of Payment",
+      "options": "Mode of Payment",
+      "reqd": 1
+    },
+    {
+      "fieldname": "paid_to_account",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Paid To Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "receivable_account",
+      "fieldtype": "Link",
+      "label": "Receivable Account",
+      "options": "Account"
+    }
+  ],
+  "istable": 1,
+  "modified": "2026-05-19 00:00:00.000000",
+  "module": "Mpesa Erpnext",
+  "name": "M-Pesa Payment Account Mapping",
+  "owner": "Administrator",
+  "permissions": [],
+  "quick_entry": 0,
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
+

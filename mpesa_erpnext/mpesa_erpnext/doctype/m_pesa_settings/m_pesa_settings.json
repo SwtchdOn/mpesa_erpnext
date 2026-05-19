@@ -18,6 +18,7 @@
     "default_mode_of_payment",
     "paid_to_account",
     "default_receivable_account",
+    "payment_account_mappings",
     "allow_partial_payments",
     "allow_overpayments",
     "allow_customer_phone_matching",
@@ -85,14 +86,19 @@
       "fieldname": "paid_to_account",
       "fieldtype": "Link",
       "label": "Paid To Account",
-      "options": "Account",
-      "reqd": 1
+      "options": "Account"
     },
     {
       "fieldname": "default_receivable_account",
       "fieldtype": "Link",
       "label": "Default Receivable Account",
       "options": "Account"
+    },
+    {
+      "fieldname": "payment_account_mappings",
+      "fieldtype": "Table",
+      "label": "Payment Account Mappings",
+      "options": "M-Pesa Payment Account Mapping"
     },
     {
       "default": "1",

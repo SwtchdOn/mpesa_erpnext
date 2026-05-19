@@ -17,8 +17,10 @@ def test_normalize_payload_builds_transaction_fields():
 
     assert transaction["mpesa_receipt_number"] == "RHF123ABC"
     assert transaction["amount"] == 10000
+    assert transaction["paybill_number"] is None
     assert transaction["bill_ref_number"] == "SINV-2026-00045"
     assert transaction["payer_name"] == "John Kamau"
+
 
 
 def test_normalize_phone_supports_common_kenyan_formats():

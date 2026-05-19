@@ -11,6 +11,7 @@
     "status",
     "transaction_date",
     "amount",
+    "paybill_number",
     "party_section",
     "phone_number",
     "payer_name",
@@ -52,6 +53,11 @@
       "in_list_view": 1,
       "label": "Amount",
       "reqd": 1
+    },
+    {
+      "fieldname": "paybill_number",
+      "fieldtype": "Data",
+      "label": "Paybill Number"
     },
     {
       "fieldname": "party_section",
@@ -151,4 +157,3 @@
   "sort_field": "transaction_date",
   "sort_order": "DESC"
 }
-

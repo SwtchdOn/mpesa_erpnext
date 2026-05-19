@@ -19,6 +19,7 @@ def normalize_payload(payload):
     return {
         "mpesa_receipt_number": payload.get("TransID"),
         "amount": flt(payload.get("TransAmount")),
+        "paybill_number": payload.get("BusinessShortCode") or payload.get("ShortCode") or payload.get("PayBillNumber"),
         "bill_ref_number": payload.get("BillRefNumber"),
         "phone_number": payload.get("MSISDN"),
         "payer_name": " ".join(
@@ -94,6 +95,7 @@ def reconcile_transaction(transaction_name, manual=False):
         return transaction
 
     try:
+        payment_mapping = get_payment_account_mapping(transaction, settings)
         invoice = _get_valid_sales_invoice(transaction, settings, throw=False)
         customer = invoice.customer if invoice else _get_valid_customer_by_phone(transaction, settings)
 
@@ -108,7 +110,13 @@ def reconcile_transaction(transaction_name, manual=False):
             transaction.save(ignore_permissions=True)
             return transaction
 
-        payment_entry = create_payment_entry(transaction, settings, invoice=invoice, customer=customer)
+        payment_entry = create_payment_entry(
+            transaction,
+            settings,
+            payment_mapping,
+            invoice=invoice,
+            customer=customer,
+        )
         transaction.payment_entry = payment_entry.name
         transaction.status = STATUS_RECONCILED
         transaction.error_message = None
@@ -123,18 +131,22 @@ def reconcile_transaction(transaction_name, manual=False):
         return transaction
 
 
-def create_payment_entry(transaction, settings, invoice=None, customer=None):
+def create_payment_entry(transaction, settings, payment_mapping, invoice=None, customer=None):
     amount = flt(transaction.amount)
 
     payment_entry = frappe.new_doc("Payment Entry")
     payment_entry.payment_type = "Receive"
     payment_entry.company = invoice.company if invoice else settings.company
     payment_entry.posting_date = getdate(transaction.transaction_date) if transaction.transaction_date else getdate()
-    payment_entry.mode_of_payment = settings.default_mode_of_payment
+    payment_entry.mode_of_payment = payment_mapping["mode_of_payment"]
     payment_entry.party_type = "Customer"
     payment_entry.party = customer or invoice.customer
-    payment_entry.paid_from = invoice.debit_to if invoice else _get_customer_receivable_account(customer, settings)
-    payment_entry.paid_to = settings.paid_to_account
+    payment_entry.paid_from = (
+        invoice.debit_to
+        if invoice
+        else _get_customer_receivable_account(customer, settings, payment_mapping)
+    )
+    payment_entry.paid_to = payment_mapping["paid_to_account"]
     payment_entry.paid_amount = amount
     payment_entry.received_amount = amount
     payment_entry.reference_no = transaction.mpesa_receipt_number
@@ -160,6 +172,38 @@ def create_payment_entry(transaction, settings, invoice=None, customer=None):
         payment_entry.submit()
 
     return payment_entry
+
+
+def get_payment_account_mapping(transaction, settings):
+    paybill_number = transaction.paybill_number or settings.paybill_number
+    default_mapping = None
+
+    for row in settings.payment_account_mappings:
+        mapping = {
+            "mode_of_payment": row.mode_of_payment,
+            "paid_to_account": row.paid_to_account,
+            "receivable_account": row.receivable_account,
+        }
+
+        if row.paybill_number and paybill_number and row.paybill_number == paybill_number:
+            return mapping
+
+        if row.is_default:
+            default_mapping = mapping
+
+    mapping = default_mapping or {
+        "mode_of_payment": settings.default_mode_of_payment,
+        "paid_to_account": settings.paid_to_account,
+        "receivable_account": settings.default_receivable_account,
+    }
+
+    if not mapping.get("mode_of_payment"):
+        frappe.throw("Mode of Payment is missing in M-Pesa Settings")
+
+    if not mapping.get("paid_to_account"):
+        frappe.throw("Paid To Account is missing in M-Pesa Settings")
+
+    return mapping
 
 
 def _get_valid_sales_invoice(transaction, settings, throw=True):
@@ -188,9 +232,6 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
 
     if flt(invoice.outstanding_amount) <= 0:
         frappe.throw(f"Sales Invoice {invoice.name} is already fully paid")
-
-    if not settings.paid_to_account:
-        frappe.throw("Paid To Account is missing in M-Pesa Settings")
 
     if flt(transaction.amount) < flt(invoice.outstanding_amount) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
@@ -231,9 +272,9 @@ def _find_customers_by_phone(phone):
     return matches
 
 
-def _get_customer_receivable_account(customer, settings):
-    if settings.default_receivable_account:
-        return settings.default_receivable_account
+def _get_customer_receivable_account(customer, settings, payment_mapping):
+    if payment_mapping.get("receivable_account"):
+        return payment_mapping["receivable_account"]
 
     try:
         from erpnext.accounts.party import get_party_account
