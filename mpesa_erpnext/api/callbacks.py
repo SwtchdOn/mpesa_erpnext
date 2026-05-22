@@ -1,6 +1,6 @@
 import frappe
 
-from mpesa_erpnext.reconciliation import process_payload
+from mpesa_erpnext.reconciliation import process_payload, validate_c2b_payload
 
 
 @frappe.whitelist(allow_guest=True)
@@ -16,6 +16,21 @@ def c2b_confirmation(token=None):
             "ResultDesc": "Accepted",
             "Transaction": transaction.name,
             "Status": transaction.status,
+        }
+    )
+
+
+@frappe.whitelist(allow_guest=True)
+def c2b_validation(token=None):
+    _validate_callback_token(token)
+
+    payload = _get_callback_payload()
+    result_code, result_desc = validate_c2b_payload(payload)
+
+    frappe.local.response.update(
+        {
+            "ResultCode": result_code,
+            "ResultDesc": result_desc,
         }
     )
 

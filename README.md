@@ -19,6 +19,7 @@ The MVP flow is:
 - `M-Pesa Payment Account Mapping` child table for Paybill-specific accounting setup.
 - Manual payload import endpoint.
 - Daraja C2B confirmation callback endpoint.
+- Daraja C2B validation endpoint.
 - Idempotent transaction saving.
 - Sales Invoice matching by `BillRefNumber`.
 - Optional Customer matching by phone number.
@@ -47,8 +48,11 @@ Default accounting fields:
 - `Default Mode of Payment`
 - `Paid To Account`
 - `Default Receivable Account`
+- `Enable Strict C2B Validation`
 
 These defaults are used when no payment account mapping row matches.
+
+Strict C2B validation is disabled by default so the validation URL does not accidentally block legitimate payments with mistyped or non-invoice account numbers. Enable it only when your customer payment reference process is clean.
 
 ### Payment Account Mappings
 
@@ -122,6 +126,41 @@ The callback accepts JSON or form-encoded payloads. It returns a top-level Daraj
 The callback token is compared with `Callback Secret / Token` in `M-Pesa Settings`.
 
 The callback fails closed if no callback token is configured.
+
+### Daraja C2B Validation
+
+```text
+/api/method/mpesa_erpnext.api.callbacks.c2b_validation?token=YOUR_SECRET
+```
+
+Use this as the Daraja Validation URL.
+
+The validation endpoint checks:
+
+- Amount is greater than zero.
+- Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled.
+- Sales Order and Quotation references are accepted for downstream/manual handling.
+- Customer phone fallback is accepted when enabled.
+
+If `Enable Strict C2B Validation` is disabled, unknown or missing account numbers are accepted so the payment can be reviewed after confirmation. If strict validation is enabled, unknown or missing account numbers are rejected.
+
+Accepted response:
+
+```json
+{
+  "ResultCode": 0,
+  "ResultDesc": "Accepted"
+}
+```
+
+Rejected response:
+
+```json
+{
+  "ResultCode": "C2B00011",
+  "ResultDesc": "No matching reference found for account number BAD-REF"
+}
+```
 
 ### Manual Import
 

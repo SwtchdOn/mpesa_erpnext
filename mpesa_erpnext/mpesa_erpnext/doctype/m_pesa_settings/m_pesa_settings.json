@@ -22,6 +22,7 @@
     "allow_partial_payments",
     "allow_overpayments",
     "allow_customer_phone_matching",
+    "enable_strict_c2b_validation",
     "auto_submit_payment_entry"
   ],
   "fields": [
@@ -117,6 +118,13 @@
       "fieldname": "allow_customer_phone_matching",
       "fieldtype": "Check",
       "label": "Allow Customer Phone Matching"
+    },
+    {
+      "default": "0",
+      "description": "When enabled, the validation URL rejects unknown or missing account numbers before the customer completes payment. Keep disabled until your customer payment references are clean.",
+      "fieldname": "enable_strict_c2b_validation",
+      "fieldtype": "Check",
+      "label": "Enable Strict C2B Validation"
     },
     {
       "default": "1",

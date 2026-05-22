@@ -94,6 +94,36 @@ def process_payload(payload, auto_commit=False):
     return frappe.get_doc("M-Pesa Transaction", transaction.name)
 
 
+def validate_c2b_payload(payload):
+    data = normalize_payload(payload)
+    settings = frappe.get_single("M-Pesa Settings")
+
+    if flt(data.get("amount")) <= 0:
+        return "C2B00013", "Invalid amount"
+
+    bill_ref_number = data.get("bill_ref_number")
+    if not bill_ref_number:
+        return _validation_result(settings, False, "Account number is required")
+
+    validation_error = _validate_invoice_reference(data, settings)
+    if validation_error:
+        return "C2B00011", validation_error
+
+    if _reference_exists("Sales Invoice", bill_ref_number):
+        return 0, "Accepted"
+
+    if _reference_exists("Sales Order", bill_ref_number):
+        return 0, "Accepted"
+
+    if _reference_exists("Quotation", bill_ref_number):
+        return 0, "Accepted"
+
+    if settings.allow_customer_phone_matching and normalize_phone(data.get("phone_number")):
+        return 0, "Accepted"
+
+    return _validation_result(settings, False, f"No matching reference found for account number {bill_ref_number}")
+
+
 def reconcile_transaction(transaction_name, manual=False):
     transaction = frappe.get_doc("M-Pesa Transaction", transaction_name)
     settings = frappe.get_single("M-Pesa Settings")
@@ -283,6 +313,32 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
         frappe.throw("Payment amount exceeds outstanding amount")
 
     return invoice
+
+
+def _validate_invoice_reference(data, settings):
+    bill_ref_number = data.get("bill_ref_number")
+    invoice_name = frappe.db.exists("Sales Invoice", bill_ref_number)
+    if not invoice_name:
+        return None
+
+    transaction = frappe._dict(data)
+    try:
+        _get_valid_sales_invoice(transaction, settings, throw=True)
+    except Exception as exc:
+        return str(exc)
+
+    return None
+
+
+def _reference_exists(doctype, name):
+    return bool(frappe.db.exists(doctype, name))
+
+
+def _validation_result(settings, is_valid, message):
+    if is_valid or not settings.enable_strict_c2b_validation:
+        return 0, "Accepted"
+
+    return "C2B00011", message
 
 
 def _get_valid_customer_by_phone(transaction, settings):
