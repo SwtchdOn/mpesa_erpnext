@@ -110,6 +110,14 @@ Customer phone matches create an unallocated Receive Payment Entry for that Cust
 
 ### Daraja C2B Confirmation
 
+Use the neutral endpoint below when registering URLs with Daraja. Daraja rejects URLs containing words such as `mpesa`, `cmd`, `sql`, or `query`.
+
+```text
+/api/method/payments.callbacks.confirmation?token=YOUR_SECRET
+```
+
+Legacy internal endpoint:
+
 ```text
 /api/method/mpesa_erpnext.api.callbacks.c2b_confirmation?token=YOUR_SECRET
 ```
@@ -128,6 +136,14 @@ The callback token is compared with `Callback Secret / Token` in `M-Pesa Setting
 The callback fails closed if no callback token is configured.
 
 ### Daraja C2B Validation
+
+Use the neutral endpoint below when registering URLs with Daraja:
+
+```text
+/api/method/payments.callbacks.validation?token=YOUR_SECRET
+```
+
+Legacy internal endpoint:
 
 ```text
 /api/method/mpesa_erpnext.api.callbacks.c2b_validation?token=YOUR_SECRET

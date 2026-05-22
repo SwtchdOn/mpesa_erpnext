@@ -12,7 +12,7 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mpesa_erpnext*"]
+include = ["mpesa_erpnext*", "payments*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.js", "*.txt"]
