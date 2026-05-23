@@ -10,7 +10,7 @@ class MPesaTransaction(Document):
 
     @frappe.whitelist()
     def retry_reconciliation(self):
-        from mpesa_erpnext.reconciliation import reconcile_transaction
+        from swdpay.reconciliation import reconcile_transaction
 
         reconcile_transaction(self.name)
         self.reload()
@@ -18,7 +18,7 @@ class MPesaTransaction(Document):
 
     @frappe.whitelist()
     def create_payment_entry(self):
-        from mpesa_erpnext.reconciliation import reconcile_transaction
+        from swdpay.reconciliation import reconcile_transaction
 
         reconcile_transaction(self.name, manual=True)
         self.reload()

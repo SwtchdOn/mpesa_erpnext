@@ -125,7 +125,7 @@
     }
   ],
   "modified": "2026-05-19 00:00:00.000000",
-  "module": "Mpesa Erpnext",
+  "module": "Swdpay",
   "name": "M-Pesa Transaction",
   "owner": "Administrator",
   "permissions": [

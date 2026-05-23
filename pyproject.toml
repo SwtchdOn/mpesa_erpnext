@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mpesa_erpnext"
+name = "swdpay"
 version = "0.0.1"
 description = "ERPNext M-Pesa Paybill to Sales Invoice reconciliation"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mpesa_erpnext*", "payments*"]
+include = ["swdpay*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.js", "*.txt"]

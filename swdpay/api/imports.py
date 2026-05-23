@@ -1,6 +1,6 @@
 import frappe
 
-from mpesa_erpnext.reconciliation import process_payload
+from swdpay.reconciliation import process_payload
 
 
 @frappe.whitelist()

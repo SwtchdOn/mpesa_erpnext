@@ -1,6 +1,6 @@
 import frappe
 
-from mpesa_erpnext.reconciliation import process_payload, validate_c2b_payload
+from swdpay.reconciliation import process_payload, validate_c2b_payload
 
 
 @frappe.whitelist(allow_guest=True)

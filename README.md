@@ -1,4 +1,4 @@
-# M-Pesa ERPNext
+# SwdPay ERPNext
 
 ERPNext custom app for receiving Safaricom M-Pesa Paybill C2B payments, matching them to Sales Invoices, and creating Payment Entries.
 
@@ -31,6 +31,18 @@ The MVP flow is:
 - Role-gated manual transaction imports.
 - Dedicated `M-Pesa Reconciliation Manager` role fixture.
 - Fail-closed callback token validation.
+
+## App Name
+
+The installed Frappe app name is:
+
+```text
+swdpay
+```
+
+This keeps Daraja callback URLs free from blocked keywords such as `mpesa`, `cmd`, `sql`, and `query`.
+
+If you previously installed this app under the old `mpesa_erpnext` name, treat this as an app rename. In a production site, plan the migration carefully so existing DocTypes and data are preserved.
 
 ## Settings
 
@@ -110,16 +122,10 @@ Customer phone matches create an unallocated Receive Payment Entry for that Cust
 
 ### Daraja C2B Confirmation
 
-Use the neutral endpoint below when registering URLs with Daraja. Daraja rejects URLs containing words such as `mpesa`, `cmd`, `sql`, or `query`.
+Use this endpoint when registering the Daraja Confirmation URL. The installed app name is `swdpay`, so the URL avoids Daraja's blocked keywords such as `mpesa`, `cmd`, `sql`, and `query`.
 
 ```text
-/api/method/payments.callbacks.confirmation?token=YOUR_SECRET
-```
-
-Legacy internal endpoint:
-
-```text
-/api/method/mpesa_erpnext.api.callbacks.c2b_confirmation?token=YOUR_SECRET
+/api/method/swdpay.api.callbacks.c2b_confirmation?token=YOUR_SECRET
 ```
 
 The callback accepts JSON or form-encoded payloads. It returns a top-level Daraja-style success response:
@@ -137,19 +143,11 @@ The callback fails closed if no callback token is configured.
 
 ### Daraja C2B Validation
 
-Use the neutral endpoint below when registering URLs with Daraja:
+Use this endpoint when registering the Daraja Validation URL:
 
 ```text
-/api/method/payments.callbacks.validation?token=YOUR_SECRET
+/api/method/swdpay.api.callbacks.c2b_validation?token=YOUR_SECRET
 ```
-
-Legacy internal endpoint:
-
-```text
-/api/method/mpesa_erpnext.api.callbacks.c2b_validation?token=YOUR_SECRET
-```
-
-Use this as the Daraja Validation URL.
 
 The validation endpoint checks:
 
@@ -181,7 +179,7 @@ Rejected response:
 ### Manual Import
 
 ```text
-/api/method/mpesa_erpnext.api.imports.import_transaction
+/api/method/swdpay.api.imports.import_transaction
 ```
 
 Pass a `payload` argument containing the raw M-Pesa JSON.
@@ -254,8 +252,8 @@ This repository currently contains the custom app source only. Full integration 
 Basic local checks used during development:
 
 ```bash
-python3 -m py_compile mpesa_erpnext/reconciliation.py mpesa_erpnext/api/callbacks.py mpesa_erpnext/api/imports.py
-python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_settings/m_pesa_settings.json
-python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_transaction/m_pesa_transaction.json
-python3 -m json.tool mpesa_erpnext/mpesa_erpnext/doctype/m_pesa_payment_account_mapping/m_pesa_payment_account_mapping.json
+python3 -m py_compile swdpay/reconciliation.py swdpay/api/callbacks.py swdpay/api/imports.py
+python3 -m json.tool swdpay/swdpay/doctype/m_pesa_settings/m_pesa_settings.json
+python3 -m json.tool swdpay/swdpay/doctype/m_pesa_transaction/m_pesa_transaction.json
+python3 -m json.tool swdpay/swdpay/doctype/m_pesa_payment_account_mapping/m_pesa_payment_account_mapping.json
 ```

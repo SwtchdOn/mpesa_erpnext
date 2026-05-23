@@ -10,7 +10,7 @@ frappe_stub.utils = frappe_utils_stub
 sys.modules.setdefault("frappe", frappe_stub)
 sys.modules.setdefault("frappe.utils", frappe_utils_stub)
 
-from mpesa_erpnext.reconciliation import get_phone_variants, normalize_payload, normalize_phone
+from swdpay.reconciliation import get_phone_variants, normalize_payload, normalize_phone
 
 
 def test_normalize_payload_builds_transaction_fields():

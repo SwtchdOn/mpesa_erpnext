@@ -1,5 +1,5 @@
-app_name = "mpesa_erpnext"
-app_title = "M-Pesa ERPNext"
+app_name = "swdpay"
+app_title = "SwdPay"
 app_publisher = "William Luke"
 app_description = "Match M-Pesa Paybill payments to ERPNext Sales Invoices"
 app_email = "william@switchedon.world"
