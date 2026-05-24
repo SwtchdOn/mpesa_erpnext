@@ -12,7 +12,7 @@ class MPesaTransaction(Document):
     def retry_reconciliation(self):
         from swdpay.reconciliation import reconcile_transaction
 
-        reconcile_transaction(self.name)
+        reconcile_transaction(self.name, manual=True)
         self.reload()
         return self
 
@@ -29,4 +29,3 @@ class MPesaTransaction(Document):
         self.status = "Ignored"
         self.save()
         return self
-

@@ -21,12 +21,15 @@ The MVP flow is:
 - Daraja C2B confirmation callback endpoint.
 - Daraja C2B validation endpoint.
 - Idempotent transaction saving.
+- Background reconciliation for live confirmation callbacks.
 - Sales Invoice matching by `BillRefNumber`.
 - Optional Customer matching by phone number.
 - Payment Entry creation and optional submission.
 - Partial payment support.
 - Overpayment blocking by default, configurable in settings.
 - Exception status and error message capture.
+- Reconciliation attempt history with attempt count and last attempt time.
+- Frappe Error Log entries for reconciliation failures.
 - Manual retry and ignore actions from the transaction form.
 - Role-gated manual transaction imports.
 - Dedicated `M-Pesa Reconciliation Manager` role fixture.
@@ -118,6 +121,8 @@ Phone matching only succeeds when exactly one Customer matches. If zero or multi
 
 Customer phone matches create an unallocated Receive Payment Entry for that Customer.
 
+Some Daraja C2B callbacks send a hashed `MSISDN` instead of a plain phone number. The app stores this in `Phone Hash` and leaves `Phone Number` blank, because the hash cannot be safely used for Customer phone matching without a separate decoding/mapping process.
+
 ## Endpoints
 
 ### Daraja C2B Confirmation
@@ -128,7 +133,9 @@ Use this endpoint when registering the Daraja Confirmation URL. The installed ap
 /api/method/swdpay.api.callbacks.c2b_confirmation?token=YOUR_SECRET
 ```
 
-The callback accepts JSON or form-encoded payloads. It returns a top-level Daraja-style success response:
+The callback accepts JSON or form-encoded payloads. It saves the raw transaction first, queues reconciliation in the background, commits the saved transaction, and returns quickly to Daraja.
+
+It returns a top-level Daraja-style success response:
 
 ```json
 {
@@ -221,6 +228,10 @@ Duplicate callbacks do not create another Payment Entry. The existing transactio
 
 If a duplicate callback arrives concurrently while the first request is inserting the same receipt number, the unique receipt constraint is caught and the existing transaction is returned.
 
+Each reconciliation run appends a read-only attempt row to the transaction. The parent transaction also stores `Reconciliation Attempt Count` and `Last Reconciliation Attempt`.
+
+When reconciliation fails, the transaction is marked `Exception`, the visible `Error Message` is updated, the attempt history records the failure source, and a Frappe Error Log entry is written with the traceback.
+
 ## Payment Entry Behaviour
 
 For invoice matches:
@@ -255,5 +266,6 @@ Basic local checks used during development:
 python3 -m py_compile swdpay/reconciliation.py swdpay/api/callbacks.py swdpay/api/imports.py
 python3 -m json.tool swdpay/swdpay/doctype/m_pesa_settings/m_pesa_settings.json
 python3 -m json.tool swdpay/swdpay/doctype/m_pesa_transaction/m_pesa_transaction.json
+python3 -m json.tool swdpay/swdpay/doctype/m_pesa_reconciliation_attempt/m_pesa_reconciliation_attempt.json
 python3 -m json.tool swdpay/swdpay/doctype/m_pesa_payment_account_mapping/m_pesa_payment_account_mapping.json
 ```

@@ -14,12 +14,17 @@
     "paybill_number",
     "party_section",
     "phone_number",
+    "phone_hash",
     "payer_name",
     "bill_ref_number",
     "reconciliation_section",
     "sales_invoice",
     "customer",
     "payment_entry",
+    "attempts_section",
+    "reconciliation_attempt_count",
+    "last_reconciliation_attempt",
+    "reconciliation_attempts",
     "raw_payload_section",
     "raw_payload",
     "error_message"
@@ -70,6 +75,12 @@
       "label": "Phone Number"
     },
     {
+      "fieldname": "phone_hash",
+      "fieldtype": "Data",
+      "label": "Phone Hash",
+      "read_only": 1
+    },
+    {
       "fieldname": "payer_name",
       "fieldtype": "Data",
       "label": "Payer Name"
@@ -104,6 +115,31 @@
       "in_list_view": 1,
       "label": "Payment Entry",
       "options": "Payment Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "attempts_section",
+      "fieldtype": "Section Break",
+      "label": "Attempts"
+    },
+    {
+      "default": "0",
+      "fieldname": "reconciliation_attempt_count",
+      "fieldtype": "Int",
+      "label": "Reconciliation Attempt Count",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_reconciliation_attempt",
+      "fieldtype": "Datetime",
+      "label": "Last Reconciliation Attempt",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reconciliation_attempts",
+      "fieldtype": "Table",
+      "label": "Reconciliation Attempts",
+      "options": "M-Pesa Reconciliation Attempt",
       "read_only": 1
     },
     {

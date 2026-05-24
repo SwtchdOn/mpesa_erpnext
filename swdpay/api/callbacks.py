@@ -2,7 +2,7 @@ import hmac
 
 import frappe
 
-from swdpay.reconciliation import process_payload, validate_c2b_payload
+from swdpay.reconciliation import enqueue_reconciliation, save_transaction_from_payload, validate_c2b_payload
 
 
 @frappe.whitelist(allow_guest=True)
@@ -10,14 +10,17 @@ def c2b_confirmation(token=None):
     _validate_callback_token(token)
 
     payload = _get_callback_payload()
-    transaction = process_payload(payload, auto_commit=True)
+    transaction, duplicate = save_transaction_from_payload(payload)
+
+    if not duplicate and transaction.status != "Exception":
+        enqueue_reconciliation(transaction.name)
+
+    frappe.db.commit()
 
     frappe.local.response.update(
         {
             "ResultCode": 0,
             "ResultDesc": "Accepted",
-            "Transaction": transaction.name,
-            "Status": transaction.status,
         }
     )
 

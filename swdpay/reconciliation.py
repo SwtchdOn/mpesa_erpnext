@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 import frappe
-from frappe.utils import flt, getdate
+from frappe.utils import flt, getdate, now_datetime
 
 
 STATUS_NEW = "New"
@@ -16,12 +16,17 @@ def normalize_payload(payload):
     if isinstance(payload, str):
         payload = json.loads(payload)
 
+    msisdn = payload.get("MSISDN")
+    phone_number = None if is_hashed_msisdn(msisdn) else msisdn
+    phone_hash = msisdn if is_hashed_msisdn(msisdn) else None
+
     return {
         "mpesa_receipt_number": payload.get("TransID"),
         "amount": flt(payload.get("TransAmount")),
         "paybill_number": payload.get("BusinessShortCode") or payload.get("ShortCode") or payload.get("PayBillNumber"),
         "bill_ref_number": payload.get("BillRefNumber"),
-        "phone_number": payload.get("MSISDN"),
+        "phone_number": phone_number,
+        "phone_hash": phone_hash,
         "payer_name": " ".join(
             filter(
                 None,
@@ -78,15 +83,27 @@ def save_transaction_from_payload(payload):
     return transaction, False
 
 
+def enqueue_reconciliation(transaction_name):
+    frappe.enqueue(
+        "swdpay.reconciliation.reconcile_transaction",
+        queue="short",
+        transaction_name=transaction_name,
+        source="Background Job",
+        enqueue_after_commit=True,
+    )
+
+
 def process_payload(payload, auto_commit=False):
     transaction, duplicate = save_transaction_from_payload(payload)
-    if duplicate:
+    if duplicate or transaction.status == STATUS_EXCEPTION:
+        if auto_commit:
+            frappe.db.commit()
         return transaction
 
     try:
-        reconcile_transaction(transaction.name)
+        reconcile_transaction(transaction.name, source="Manual Import")
     except Exception:
-        frappe.log_error(frappe.get_traceback(), "M-Pesa reconciliation failed")
+        frappe.log_error(frappe.get_traceback(), f"M-Pesa reconciliation failed: {transaction.name}")
 
     if auto_commit:
         frappe.db.commit()
@@ -124,14 +141,17 @@ def validate_c2b_payload(payload):
     return _validation_result(settings, False, f"No matching reference found for account number {bill_ref_number}")
 
 
-def reconcile_transaction(transaction_name, manual=False):
+def reconcile_transaction(transaction_name, manual=False, source=None):
     transaction = frappe.get_doc("M-Pesa Transaction", transaction_name)
     settings = frappe.get_single("M-Pesa Settings")
+    source = source or ("Manual Retry" if manual else "Automatic")
 
     if transaction.status == STATUS_RECONCILED and transaction.payment_entry:
+        _safe_record_reconciliation_attempt(transaction, source, "Skipped", "Transaction is already reconciled")
         return transaction
 
     try:
+        _safe_record_reconciliation_attempt(transaction, source, "Started", "Reconciliation started", increment=True)
         payment_mapping = get_payment_account_mapping(transaction, settings)
         invoice = _get_valid_sales_invoice(transaction, settings, throw=False)
         customer = invoice.customer if invoice else _get_valid_customer_by_phone(transaction, settings)
@@ -146,6 +166,7 @@ def reconcile_transaction(transaction_name, manual=False):
             _complete_existing_payment_entry(transaction, settings)
             transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
             transaction.save(ignore_permissions=True)
+            _safe_record_reconciliation_attempt(transaction, source, "Success", "Existing Payment Entry completed")
             return transaction
 
         payment_entry = create_payment_entry(
@@ -158,11 +179,14 @@ def reconcile_transaction(transaction_name, manual=False):
         transaction.status = STATUS_RECONCILED
         transaction.error_message = None
         transaction.save(ignore_permissions=True)
+        _safe_record_reconciliation_attempt(transaction, source, "Success", f"Payment Entry {payment_entry.name} created")
         return transaction
     except Exception as exc:
         transaction.status = STATUS_EXCEPTION
         transaction.error_message = str(exc)
         transaction.save(ignore_permissions=True)
+        _safe_record_reconciliation_attempt(transaction, source, "Exception", str(exc))
+        frappe.log_error(frappe.get_traceback(), f"M-Pesa reconciliation failed: {transaction.name}")
         if manual:
             raise
         return transaction
@@ -417,7 +441,7 @@ def _get_customer_receivable_account(customer, settings, payment_mapping):
 
 
 def normalize_phone(value):
-    if not value:
+    if not value or is_hashed_msisdn(value):
         return None
 
     digits = "".join(char for char in str(value) if char.isdigit())
@@ -426,6 +450,14 @@ def normalize_phone(value):
     if digits.startswith("7") and len(digits) == 9:
         return f"254{digits}"
     return digits
+
+
+def is_hashed_msisdn(value):
+    if not value:
+        return False
+
+    value = str(value).strip().lower()
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def get_phone_variants(value):
@@ -451,6 +483,33 @@ def _complete_existing_payment_entry(transaction, settings):
 def _is_submitted_or_draft_allowed(transaction, settings):
     payment_entry = frappe.get_doc("Payment Entry", transaction.payment_entry)
     return payment_entry.docstatus == 1 or not settings.auto_submit_payment_entry
+
+
+def _record_reconciliation_attempt(transaction, source, status, message, increment=False):
+    transaction.last_reconciliation_attempt = now_datetime()
+    if increment:
+        transaction.reconciliation_attempt_count = (transaction.reconciliation_attempt_count or 0) + 1
+
+    transaction.append(
+        "reconciliation_attempts",
+        {
+            "attempted_on": transaction.last_reconciliation_attempt,
+            "source": source,
+            "status": status,
+            "message": message,
+        },
+    )
+    transaction.save(ignore_permissions=True)
+
+
+def _safe_record_reconciliation_attempt(transaction, source, status, message, increment=False):
+    try:
+        _record_reconciliation_attempt(transaction, source, status, message, increment=increment)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            f"M-Pesa reconciliation attempt log failed: {transaction.name}",
+        )
 
 
 def _save_exception_transaction(data, error_message):
