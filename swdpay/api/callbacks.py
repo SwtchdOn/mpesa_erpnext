@@ -1,3 +1,5 @@
+import hmac
+
 import frappe
 
 from swdpay.reconciliation import process_payload, validate_c2b_payload
@@ -38,12 +40,26 @@ def c2b_validation(token=None):
 def _validate_callback_token(token):
     settings = frappe.get_single("M-Pesa Settings")
     expected = settings.get_password("callback_secret") if settings.callback_secret else None
+    provided = _get_request_token(token)
 
     if not expected:
         frappe.throw("M-Pesa callback token is not configured", frappe.PermissionError)
 
-    if token != expected:
+    if not provided or not hmac.compare_digest(provided.strip(), expected.strip()):
         frappe.throw("Invalid callback token", frappe.PermissionError)
+
+
+def _get_request_token(token=None):
+    if token:
+        return token
+
+    if frappe.form_dict and frappe.form_dict.get("token"):
+        return frappe.form_dict.get("token")
+
+    if frappe.request and frappe.request.args:
+        return frappe.request.args.get("token")
+
+    return None
 
 
 def _get_callback_payload():
