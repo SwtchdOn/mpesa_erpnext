@@ -21,6 +21,9 @@
     "sales_invoice",
     "customer",
     "payment_entry",
+    "write_off_amount",
+    "write_off_account",
+    "write_off_cost_center",
     "attempts_section",
     "reconciliation_attempt_count",
     "last_reconciliation_attempt",
@@ -115,6 +118,26 @@
       "in_list_view": 1,
       "label": "Payment Entry",
       "options": "Payment Entry",
+      "read_only": 1
+    },
+    {
+      "fieldname": "write_off_amount",
+      "fieldtype": "Currency",
+      "label": "Write Off Amount",
+      "read_only": 1
+    },
+    {
+      "fieldname": "write_off_account",
+      "fieldtype": "Link",
+      "label": "Write Off Account",
+      "options": "Account",
+      "read_only": 1
+    },
+    {
+      "fieldname": "write_off_cost_center",
+      "fieldtype": "Link",
+      "label": "Write Off Cost Center",
+      "options": "Cost Center",
       "read_only": 1
     },
     {

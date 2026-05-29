@@ -27,6 +27,7 @@ The MVP flow is:
 - Payment Entry creation and optional submission.
 - Partial payment support.
 - Overpayment blocking by default, configurable in settings.
+- Optional small difference write-off for M-Pesa whole-shilling rounding.
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
@@ -68,6 +69,21 @@ Default accounting fields:
 These defaults are used when no payment account mapping row matches.
 
 Strict C2B validation is disabled by default so the validation URL does not accidentally block legitimate payments with mistyped or non-invoice account numbers. Enable it only when your customer payment reference process is clean.
+
+### Small Difference Write Off
+
+M-Pesa payments are whole-shilling payments, so invoices with cents can leave very small outstanding balances. Enable `Small Difference Write Off` if these differences should be cleared automatically.
+
+Configure:
+
+- `Enable Small Difference Write Off`
+- `Maximum Write Off Difference`
+- `Write Off Account`
+- `Write Off Cost Center`
+
+When the invoice outstanding amount is slightly higher than the M-Pesa amount and the difference is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions/loss row for the difference.
+
+Larger shortfalls continue to follow the normal partial payment settings. Overpayments are not handled by this write-off feature.
 
 ### Payment Account Mappings
 
@@ -228,6 +244,8 @@ Duplicate callbacks do not create another Payment Entry. The existing transactio
 
 If a duplicate callback arrives concurrently while the first request is inserting the same receipt number, the unique receipt constraint is caught and the existing transaction is returned.
 
+Before creating a Payment Entry, the app also checks for an existing non-cancelled Payment Entry with `Reference No` equal to the M-Pesa receipt number. If found, it links that Payment Entry to the transaction and submits it when auto-submit is enabled instead of creating a duplicate.
+
 Each reconciliation run appends a read-only attempt row to the transaction. The parent transaction also stores `Reconciliation Attempt Count` and `Last Reconciliation Attempt`.
 
 When reconciliation fails, the transaction is marked `Exception`, the visible `Error Message` is updated, the attempt history records the failure source, and a Frappe Error Log entry is written with the traceback.
@@ -247,6 +265,7 @@ For invoice matches:
 - `Reference No`: M-Pesa receipt number
 - `Reference Date`: M-Pesa transaction date
 - References table: Sales Invoice allocation
+- Small configured shortfalls: full invoice outstanding allocation plus a deductions/loss row against the configured write-off account and cost center
 
 For customer phone matches:
 

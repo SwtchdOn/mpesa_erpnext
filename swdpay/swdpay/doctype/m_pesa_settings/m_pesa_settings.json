@@ -19,6 +19,11 @@
     "paid_to_account",
     "default_receivable_account",
     "payment_account_mappings",
+    "write_off_section",
+    "enable_small_difference_write_off",
+    "max_write_off_difference",
+    "write_off_account",
+    "write_off_cost_center",
     "allow_partial_payments",
     "allow_overpayments",
     "allow_customer_phone_matching",
@@ -100,6 +105,38 @@
       "fieldtype": "Table",
       "label": "Payment Account Mappings",
       "options": "M-Pesa Payment Account Mapping"
+    },
+    {
+      "fieldname": "write_off_section",
+      "fieldtype": "Section Break",
+      "label": "Small Difference Write Off"
+    },
+    {
+      "default": "0",
+      "description": "Automatically write off small invoice shortfalls caused by M-Pesa whole-shilling payments.",
+      "fieldname": "enable_small_difference_write_off",
+      "fieldtype": "Check",
+      "label": "Enable Small Difference Write Off"
+    },
+    {
+      "default": "1",
+      "fieldname": "max_write_off_difference",
+      "fieldtype": "Currency",
+      "label": "Maximum Write Off Difference"
+    },
+    {
+      "depends_on": "eval:doc.enable_small_difference_write_off",
+      "fieldname": "write_off_account",
+      "fieldtype": "Link",
+      "label": "Write Off Account",
+      "options": "Account"
+    },
+    {
+      "depends_on": "eval:doc.enable_small_difference_write_off",
+      "fieldname": "write_off_cost_center",
+      "fieldtype": "Link",
+      "label": "Write Off Cost Center",
+      "options": "Cost Center"
     },
     {
       "default": "1",

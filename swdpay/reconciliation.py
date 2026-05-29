@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import datetime
 
 import frappe
@@ -169,6 +170,21 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
             _safe_record_reconciliation_attempt(transaction, source, "Success", "Existing Payment Entry completed")
             return transaction
 
+        existing_payment_entry = get_existing_payment_entry_for_receipt(transaction.mpesa_receipt_number)
+        if existing_payment_entry:
+            transaction.payment_entry = existing_payment_entry
+            _set_transaction_write_off_fields(transaction, settings, invoice)
+            _complete_existing_payment_entry(transaction, settings)
+            transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
+            transaction.save(ignore_permissions=True)
+            _safe_record_reconciliation_attempt(
+                transaction,
+                source,
+                "Success",
+                f"Existing Payment Entry {existing_payment_entry} linked",
+            )
+            return transaction
+
         payment_entry = create_payment_entry(
             transaction,
             settings,
@@ -193,24 +209,38 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
 
 
 def create_payment_entry(transaction, settings, payment_mapping, invoice=None, customer=None):
-    amount = flt(transaction.amount)
-    payment_entry = (
-        _get_invoice_payment_entry(transaction, payment_mapping, invoice)
-        if invoice
-        else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
+    with _system_user():
+        payment_entry = (
+            _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice)
+            if invoice
+            else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
+        )
+
+        payment_entry.insert(ignore_permissions=True)
+        transaction.payment_entry = payment_entry.name
+        _set_transaction_write_off_fields(transaction, settings, invoice)
+        transaction.save(ignore_permissions=True)
+
+        if settings.auto_submit_payment_entry:
+            payment_entry.submit()
+
+        return payment_entry
+
+
+def get_existing_payment_entry_for_receipt(receipt_number):
+    if not receipt_number:
+        return None
+
+    return frappe.db.exists(
+        "Payment Entry",
+        {
+            "reference_no": receipt_number,
+            "docstatus": ["<", 2],
+        },
     )
 
-    payment_entry.insert(ignore_permissions=True)
-    transaction.payment_entry = payment_entry.name
-    transaction.save(ignore_permissions=True)
 
-    if settings.auto_submit_payment_entry:
-        payment_entry.submit()
-
-    return payment_entry
-
-
-def _get_invoice_payment_entry(transaction, payment_mapping, invoice):
+def _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice):
     try:
         from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
@@ -229,6 +259,8 @@ def _get_invoice_payment_entry(transaction, payment_mapping, invoice):
 
     payment_entry.set("references", [])
     outstanding = flt(invoice.outstanding_amount)
+    write_off_amount = get_small_difference_write_off_amount(transaction.amount, outstanding, settings)
+    allocated_amount = outstanding if write_off_amount else min(flt(transaction.amount), outstanding)
     payment_entry.append(
         "references",
         {
@@ -236,9 +268,13 @@ def _get_invoice_payment_entry(transaction, payment_mapping, invoice):
             "reference_name": invoice.name,
             "total_amount": invoice.grand_total,
             "outstanding_amount": outstanding,
-            "allocated_amount": min(flt(transaction.amount), outstanding),
+            "allocated_amount": allocated_amount,
         },
     )
+
+    if write_off_amount:
+        _apply_small_difference_write_off(payment_entry, settings, write_off_amount)
+
     return payment_entry
 
 
@@ -330,7 +366,11 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
     if flt(invoice.outstanding_amount) <= 0:
         frappe.throw(f"Sales Invoice {invoice.name} is already fully paid")
 
-    if flt(transaction.amount) < flt(invoice.outstanding_amount) and not settings.allow_partial_payments:
+    if flt(transaction.amount) < flt(invoice.outstanding_amount) and not _is_small_difference_write_off_allowed(
+        transaction.amount,
+        invoice.outstanding_amount,
+        settings,
+    ) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
 
     if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments:
@@ -483,6 +523,68 @@ def _complete_existing_payment_entry(transaction, settings):
 def _is_submitted_or_draft_allowed(transaction, settings):
     payment_entry = frappe.get_doc("Payment Entry", transaction.payment_entry)
     return payment_entry.docstatus == 1 or not settings.auto_submit_payment_entry
+
+
+def get_small_difference_write_off_amount(payment_amount, outstanding_amount, settings):
+    difference = flt(outstanding_amount) - flt(payment_amount)
+    if difference <= 0 or not settings.enable_small_difference_write_off:
+        return 0
+
+    if difference > flt(settings.max_write_off_difference):
+        return 0
+
+    return difference
+
+
+def _is_small_difference_write_off_allowed(payment_amount, outstanding_amount, settings):
+    return bool(get_small_difference_write_off_amount(payment_amount, outstanding_amount, settings))
+
+
+def _apply_small_difference_write_off(payment_entry, settings, write_off_amount):
+    if not settings.write_off_account:
+        frappe.throw("Write Off Account is required for small difference write off")
+
+    if not settings.write_off_cost_center:
+        frappe.throw("Write Off Cost Center is required for small difference write off")
+
+    payment_entry.append(
+        "deductions",
+        {
+            "account": settings.write_off_account,
+            "cost_center": settings.write_off_cost_center,
+            "amount": write_off_amount,
+        },
+    )
+
+
+def _set_transaction_write_off_fields(transaction, settings, invoice=None):
+    transaction.write_off_amount = 0
+    transaction.write_off_account = None
+    transaction.write_off_cost_center = None
+
+    if not invoice:
+        return
+
+    write_off_amount = get_small_difference_write_off_amount(transaction.amount, invoice.outstanding_amount, settings)
+    if not write_off_amount:
+        return
+
+    transaction.write_off_amount = write_off_amount
+    transaction.write_off_account = settings.write_off_account
+    transaction.write_off_cost_center = settings.write_off_cost_center
+
+
+@contextmanager
+def _system_user():
+    original_user = frappe.session.user
+    if original_user != "Administrator":
+        frappe.set_user("Administrator")
+
+    try:
+        yield
+    finally:
+        if frappe.session.user != original_user:
+            frappe.set_user(original_user)
 
 
 def _record_reconciliation_attempt(transaction, source, status, message, increment=False):
