@@ -7,8 +7,12 @@ name = "swdpay"
 version = "0.0.1"
 description = "ERPNext M-Pesa Paybill to Sales Invoice reconciliation"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = []
+
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0,<17.0.0"
+erpnext = ">=16.0.0,<17.0.0"
 
 [tool.setuptools.packages.find]
 where = ["."]
