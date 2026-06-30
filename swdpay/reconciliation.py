@@ -200,6 +200,7 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
     except Exception as exc:
         transaction.status = STATUS_EXCEPTION
         transaction.error_message = str(exc)
+        transaction.flags.skip_payment_entry_completion = True
         transaction.save(ignore_permissions=True)
         _safe_record_reconciliation_attempt(transaction, source, "Exception", str(exc))
         frappe.log_error(frappe.get_traceback(), f"M-Pesa reconciliation failed: {transaction.name}")
@@ -285,6 +286,7 @@ def manually_create_payment_entry(
     except Exception as exc:
         transaction.status = STATUS_EXCEPTION
         transaction.error_message = str(exc)
+        transaction.flags.skip_payment_entry_completion = True
         transaction.save(ignore_permissions=True)
         _safe_record_reconciliation_attempt(transaction, source, "Exception", str(exc))
         frappe.log_error(frappe.get_traceback(), f"Manual M-Pesa Payment Entry creation failed: {transaction.name}")
@@ -387,6 +389,7 @@ def create_payment_entry(transaction, settings, payment_mapping, invoice=None, o
         payment_entry.insert(ignore_permissions=True)
         transaction.payment_entry = payment_entry.name
         _set_transaction_write_off_fields(transaction, settings, invoice)
+        transaction.flags.skip_payment_entry_completion = True
         transaction.save(ignore_permissions=True)
 
         if settings.auto_submit_payment_entry:

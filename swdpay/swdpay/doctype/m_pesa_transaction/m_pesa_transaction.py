@@ -14,7 +14,7 @@ class MPesaTransaction(Document):
             apply_selected_payment_entry(self)
 
     def on_update(self):
-        if self.payment_entry:
+        if self.payment_entry and not self.flags.get("skip_payment_entry_completion"):
             from swdpay.reconciliation import complete_selected_payment_entry
 
             complete_selected_payment_entry(self)
