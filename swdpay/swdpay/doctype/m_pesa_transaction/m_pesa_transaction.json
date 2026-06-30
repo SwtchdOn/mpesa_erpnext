@@ -19,6 +19,7 @@
     "bill_ref_number",
     "reconciliation_section",
     "sales_invoice",
+    "sales_order",
     "customer",
     "payment_entry",
     "write_off_amount",
@@ -107,6 +108,13 @@
       "options": "Sales Invoice"
     },
     {
+      "fieldname": "sales_order",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Sales Order",
+      "options": "Sales Order"
+    },
+    {
       "fieldname": "customer",
       "fieldtype": "Link",
       "label": "Customer",
@@ -117,8 +125,7 @@
       "fieldtype": "Link",
       "in_list_view": 1,
       "label": "Payment Entry",
-      "options": "Payment Entry",
-      "read_only": 1
+      "options": "Payment Entry"
     },
     {
       "fieldname": "write_off_amount",

@@ -31,7 +31,7 @@ The MVP flow is:
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
-- Manual retry and ignore actions from the transaction form.
+- Manual retry, manual Payment Entry creation, and ignore actions from the transaction form.
 - Role-gated manual transaction imports.
 - Dedicated `M-Pesa Reconciliation Manager` role fixture.
 - Fail-closed callback token validation.
@@ -250,6 +250,8 @@ Each reconciliation run appends a read-only attempt row to the transaction. The 
 
 When reconciliation fails, the transaction is marked `Exception`, the visible `Error Message` is updated, the attempt history records the failure source, and a Frappe Error Log entry is written with the traceback.
 
+Exception or unmatched transactions can be resolved manually from the transaction form. If the receipt was already created manually, select it in the Reconciliation section's `Payment Entry` field and save the transaction. Otherwise use **Create Payment Entry** to select a submitted Sales Invoice, submitted Sales Order, or Customer. New Payment Entries use the transaction receipt number as `Reference No`, and the app still links any existing non-cancelled Payment Entry with the same receipt before creating a new one.
+
 ## Payment Entry Behaviour
 
 For invoice matches:
@@ -266,6 +268,19 @@ For invoice matches:
 - `Reference Date`: M-Pesa transaction date
 - References table: Sales Invoice allocation
 - Small configured shortfalls: full invoice outstanding allocation plus a deductions/loss row against the configured write-off account and cost center
+
+For manual Sales Order matches:
+
+- The receipt is posted as a Customer advance against the submitted Sales Order.
+- The Sales Order reference allocation is limited to the order total less existing advances.
+- The selected Sales Order and resulting Payment Entry are linked back to the M-Pesa Transaction.
+
+For manually linked Payment Entries:
+
+- Cancelled Payment Entries are rejected.
+- The Payment Entry must be a Customer Receive payment with an amount matching the M-Pesa transaction.
+- If the Payment Entry has a `Reference No`, it must match the M-Pesa receipt number.
+- Sales Invoice and Sales Order references on the Payment Entry are copied back to the M-Pesa Transaction where present.
 
 For customer phone matches:
 

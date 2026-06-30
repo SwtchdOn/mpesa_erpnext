@@ -208,11 +208,179 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
         return transaction
 
 
-def create_payment_entry(transaction, settings, payment_mapping, invoice=None, customer=None):
+def manually_create_payment_entry(
+    transaction_name,
+    sales_invoice=None,
+    sales_order=None,
+    customer=None,
+    payment_entry=None,
+):
+    transaction = frappe.get_doc("M-Pesa Transaction", transaction_name)
+    settings = frappe.get_single("M-Pesa Settings")
+    source = "Manual Payment Entry"
+
+    try:
+        _safe_record_reconciliation_attempt(transaction, source, "Started", "Manual Payment Entry creation started")
+
+        if transaction.payment_entry:
+            _complete_existing_payment_entry(transaction, settings)
+            transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
+            transaction.save(ignore_permissions=True)
+            _safe_record_reconciliation_attempt(transaction, source, "Success", "Existing Payment Entry completed")
+            return transaction
+
+        if payment_entry:
+            _link_manual_payment_entry(transaction, settings, payment_entry)
+            _safe_record_reconciliation_attempt(
+                transaction,
+                source,
+                "Success",
+                f"Existing Payment Entry {transaction.payment_entry} linked",
+            )
+            return transaction
+
+        existing_payment_entry = get_existing_payment_entry_for_receipt(transaction.mpesa_receipt_number)
+        if existing_payment_entry:
+            transaction.payment_entry = existing_payment_entry
+            transaction.status = STATUS_RECONCILED
+            transaction.error_message = None
+            _complete_existing_payment_entry(transaction, settings)
+            transaction.save(ignore_permissions=True)
+            _safe_record_reconciliation_attempt(
+                transaction,
+                source,
+                "Success",
+                f"Existing Payment Entry {existing_payment_entry} linked",
+            )
+            return transaction
+
+        payment_mapping = get_payment_account_mapping(transaction, settings)
+        invoice = _get_manual_sales_invoice(transaction, settings, sales_invoice)
+        order = None if invoice else _get_manual_sales_order(transaction, settings, sales_order)
+        resolved_customer = (
+            invoice.customer
+            if invoice
+            else order.customer
+            if order
+            else _get_manual_customer(customer or transaction.customer)
+        )
+
+        transaction.sales_invoice = invoice.name if invoice else None
+        transaction.sales_order = order.name if order else None
+        transaction.customer = resolved_customer
+
+        payment_entry = create_payment_entry(
+            transaction,
+            settings,
+            payment_mapping,
+            invoice=invoice,
+            order=order,
+            customer=resolved_customer,
+        )
+        transaction.status = STATUS_RECONCILED
+        transaction.error_message = None
+        transaction.save(ignore_permissions=True)
+        _safe_record_reconciliation_attempt(transaction, source, "Success", f"Payment Entry {payment_entry.name} created")
+        return transaction
+    except Exception as exc:
+        transaction.status = STATUS_EXCEPTION
+        transaction.error_message = str(exc)
+        transaction.save(ignore_permissions=True)
+        _safe_record_reconciliation_attempt(transaction, source, "Exception", str(exc))
+        frappe.log_error(frappe.get_traceback(), f"Manual M-Pesa Payment Entry creation failed: {transaction.name}")
+        raise
+
+
+def _link_manual_payment_entry(transaction, settings, payment_entry_name):
+    payment_entry = apply_selected_payment_entry(transaction, payment_entry_name=payment_entry_name)
+    transaction.save(ignore_permissions=True)
+    _complete_existing_payment_entry(transaction, settings)
+    transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
+    transaction.save(ignore_permissions=True)
+    return payment_entry
+
+
+def apply_selected_payment_entry(transaction, payment_entry_name=None):
+    payment_entry_name = payment_entry_name or transaction.payment_entry
+    if not payment_entry_name:
+        return None
+
+    receipt_payment_entry = get_existing_payment_entry_for_receipt(transaction.mpesa_receipt_number)
+    if receipt_payment_entry and receipt_payment_entry != payment_entry_name:
+        frappe.throw(
+            f"Payment Entry {receipt_payment_entry} already uses M-Pesa receipt number {transaction.mpesa_receipt_number}"
+        )
+
+    linked_transaction = frappe.db.exists(
+        "M-Pesa Transaction",
+        {
+            "name": ["!=", transaction.name],
+            "payment_entry": payment_entry_name,
+        },
+    )
+    if linked_transaction:
+        frappe.throw(f"Payment Entry {payment_entry_name} is already linked to M-Pesa Transaction {linked_transaction}")
+
+    payment_entry = frappe.get_doc("Payment Entry", payment_entry_name)
+    if payment_entry.docstatus == 2:
+        frappe.throw(f"Payment Entry {payment_entry.name} is cancelled")
+
+    if payment_entry.payment_type != "Receive":
+        frappe.throw(f"Payment Entry {payment_entry.name} must be a Receive payment")
+
+    if payment_entry.party_type != "Customer":
+        frappe.throw(f"Payment Entry {payment_entry.name} must be for a Customer")
+
+    if flt(payment_entry.paid_amount) != flt(transaction.amount) and flt(payment_entry.received_amount) != flt(transaction.amount):
+        frappe.throw(f"Payment Entry {payment_entry.name} amount does not match the M-Pesa transaction amount")
+
+    if payment_entry.reference_no and payment_entry.reference_no != transaction.mpesa_receipt_number:
+        frappe.throw(
+            f"Payment Entry {payment_entry.name} Reference No must match M-Pesa receipt {transaction.mpesa_receipt_number}"
+        )
+
+    transaction.payment_entry = payment_entry.name
+    transaction.customer = payment_entry.party
+    _set_transaction_references_from_payment_entry(transaction, payment_entry)
+    transaction.status = STATUS_RECONCILED if payment_entry.docstatus == 1 else STATUS_MATCHED
+    transaction.error_message = None
+    return payment_entry
+
+
+def complete_selected_payment_entry(transaction):
+    settings = frappe.get_single("M-Pesa Settings")
+    _complete_existing_payment_entry(transaction, settings)
+    status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
+
+    if transaction.status != status:
+        frappe.db.set_value(
+            "M-Pesa Transaction",
+            transaction.name,
+            "status",
+            status,
+            update_modified=False,
+        )
+        transaction.status = status
+
+
+def _set_transaction_references_from_payment_entry(transaction, payment_entry):
+    transaction.sales_invoice = None
+    transaction.sales_order = None
+
+    for reference in payment_entry.references:
+        if reference.reference_doctype == "Sales Invoice" and not transaction.sales_invoice:
+            transaction.sales_invoice = reference.reference_name
+        elif reference.reference_doctype == "Sales Order" and not transaction.sales_order:
+            transaction.sales_order = reference.reference_name
+
+
+def create_payment_entry(transaction, settings, payment_mapping, invoice=None, order=None, customer=None):
     with _system_user():
         payment_entry = (
             _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice)
             if invoice
+            else _get_order_payment_entry(transaction, settings, payment_mapping, order)
+            if order
             else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
         )
 
@@ -274,6 +442,40 @@ def _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice):
 
     if write_off_amount:
         _apply_small_difference_write_off(payment_entry, settings, write_off_amount)
+
+    return payment_entry
+
+
+def _get_order_payment_entry(transaction, settings, payment_mapping, order):
+    try:
+        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+        payment_entry = get_payment_entry(
+            "Sales Order",
+            order.name,
+            party_amount=flt(transaction.amount),
+            bank_amount=flt(transaction.amount),
+            payment_type="Receive",
+        )
+    except Exception:
+        payment_entry = _new_payment_entry()
+
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, order.company, order.customer)
+    payment_entry.paid_from = _get_sales_order_receivable_account(order)
+
+    payment_entry.set("references", [])
+    outstanding = _get_sales_order_outstanding_amount(order)
+    allocated_amount = min(flt(transaction.amount), outstanding)
+    payment_entry.append(
+        "references",
+        {
+            "reference_doctype": "Sales Order",
+            "reference_name": order.name,
+            "total_amount": _get_sales_order_total_amount(order),
+            "outstanding_amount": outstanding,
+            "allocated_amount": allocated_amount,
+        },
+    )
 
     return payment_entry
 
@@ -379,6 +581,90 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
     return invoice
 
 
+def _get_manual_sales_invoice(transaction, settings, sales_invoice=None):
+    sales_invoice = sales_invoice or transaction.sales_invoice
+    if not sales_invoice:
+        return None
+
+    invoice_name = frappe.db.exists("Sales Invoice", sales_invoice)
+    if not invoice_name:
+        frappe.throw(f"Sales Invoice {sales_invoice} was not found")
+
+    invoice = frappe.get_doc("Sales Invoice", invoice_name)
+
+    if invoice.docstatus != 1:
+        frappe.throw(f"Sales Invoice {invoice.name} is not submitted")
+
+    if invoice.company != settings.company:
+        frappe.throw(f"Sales Invoice {invoice.name} belongs to company {invoice.company}, not {settings.company}")
+
+    if flt(invoice.outstanding_amount) <= 0:
+        frappe.throw(f"Sales Invoice {invoice.name} is already fully paid")
+
+    if flt(transaction.amount) < flt(invoice.outstanding_amount) and not _is_small_difference_write_off_allowed(
+        transaction.amount,
+        invoice.outstanding_amount,
+        settings,
+    ) and not settings.allow_partial_payments:
+        frappe.throw("Partial payments are disabled")
+
+    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments:
+        frappe.throw("Payment amount exceeds outstanding amount")
+
+    return invoice
+
+
+def _get_manual_sales_order(transaction, settings, sales_order=None):
+    sales_order = sales_order or transaction.get("sales_order")
+    if not sales_order:
+        return None
+
+    order_name = frappe.db.exists("Sales Order", sales_order)
+    if not order_name:
+        frappe.throw(f"Sales Order {sales_order} was not found")
+
+    order = frappe.get_doc("Sales Order", order_name)
+
+    if order.docstatus != 1:
+        frappe.throw(f"Sales Order {order.name} is not submitted")
+
+    if order.company != settings.company:
+        frappe.throw(f"Sales Order {order.name} belongs to company {order.company}, not {settings.company}")
+
+    if flt(order.per_billed) >= 100:
+        frappe.throw(f"Sales Order {order.name} is already fully billed")
+
+    if flt(transaction.amount) <= 0:
+        frappe.throw("Amount is zero")
+
+    outstanding = _get_sales_order_outstanding_amount(order)
+    if outstanding <= 0:
+        frappe.throw(f"Sales Order {order.name} is already fully paid")
+
+    if flt(transaction.amount) > outstanding and not settings.allow_overpayments:
+        frappe.throw("Payment amount exceeds outstanding amount")
+
+    return order
+
+
+def _get_sales_order_total_amount(order):
+    return flt(order.get("base_rounded_total") or order.get("base_grand_total") or order.get("rounded_total") or order.get("grand_total"))
+
+
+def _get_sales_order_outstanding_amount(order):
+    return flt(order.get("outstanding_amount") or (_get_sales_order_total_amount(order) - flt(order.get("advance_paid"))))
+
+
+def _get_manual_customer(customer):
+    if not customer:
+        frappe.throw("Select a Sales Invoice, Sales Order, or Customer before creating a Payment Entry")
+
+    if not frappe.db.exists("Customer", customer):
+        frappe.throw(f"Customer {customer} was not found")
+
+    return customer
+
+
 def _validate_invoice_reference(data, settings):
     bill_ref_number = data.get("bill_ref_number")
     invoice_name = frappe.db.exists("Sales Invoice", bill_ref_number)
@@ -478,6 +764,15 @@ def _get_customer_receivable_account(customer, settings, payment_mapping):
         return get_party_account("Customer", customer, settings.company)
     except Exception:
         frappe.throw("Default Receivable Account is required for customer phone matching")
+
+
+def _get_sales_order_receivable_account(order):
+    try:
+        from erpnext.accounts.party import get_party_account
+
+        return get_party_account("Customer", order.customer, order.company)
+    except Exception:
+        frappe.throw("Customer Receivable Account is required for Sales Order payments")
 
 
 def normalize_phone(value):
