@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 from datetime import datetime
 
 import frappe
@@ -153,15 +152,6 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
 
     try:
         _safe_record_reconciliation_attempt(transaction, source, "Started", "Reconciliation started", increment=True)
-        payment_mapping = get_payment_account_mapping(transaction, settings)
-        invoice = _get_valid_sales_invoice(transaction, settings, throw=False)
-        customer = invoice.customer if invoice else _get_valid_customer_by_phone(transaction, settings)
-
-        transaction.sales_invoice = invoice.name if invoice else None
-        transaction.customer = customer
-        transaction.status = STATUS_MATCHED
-        transaction.error_message = None
-        transaction.save(ignore_permissions=True)
 
         if transaction.payment_entry:
             _complete_existing_payment_entry(transaction, settings)
@@ -172,11 +162,7 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
 
         existing_payment_entry = get_existing_payment_entry_for_receipt(transaction.mpesa_receipt_number)
         if existing_payment_entry:
-            transaction.payment_entry = existing_payment_entry
-            _set_transaction_write_off_fields(transaction, settings, invoice)
-            _complete_existing_payment_entry(transaction, settings)
-            transaction.status = STATUS_RECONCILED if _is_submitted_or_draft_allowed(transaction, settings) else STATUS_MATCHED
-            transaction.save(ignore_permissions=True)
+            _link_existing_payment_entry(transaction, settings, existing_payment_entry)
             _safe_record_reconciliation_attempt(
                 transaction,
                 source,
@@ -184,6 +170,16 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
                 f"Existing Payment Entry {existing_payment_entry} linked",
             )
             return transaction
+
+        payment_mapping = get_payment_account_mapping(transaction, settings)
+        invoice = _get_valid_sales_invoice(transaction, settings, throw=False)
+        customer = invoice.customer if invoice else _get_valid_customer_by_phone(transaction, settings)
+
+        transaction.sales_invoice = invoice.name if invoice else None
+        transaction.customer = customer
+        transaction.status = STATUS_MATCHED
+        transaction.error_message = None
+        transaction.save(ignore_permissions=True)
 
         payment_entry = create_payment_entry(
             transaction,
@@ -231,7 +227,7 @@ def manually_create_payment_entry(
             return transaction
 
         if payment_entry:
-            _link_manual_payment_entry(transaction, settings, payment_entry)
+            _link_existing_payment_entry(transaction, settings, payment_entry)
             _safe_record_reconciliation_attempt(
                 transaction,
                 source,
@@ -242,11 +238,7 @@ def manually_create_payment_entry(
 
         existing_payment_entry = get_existing_payment_entry_for_receipt(transaction.mpesa_receipt_number)
         if existing_payment_entry:
-            transaction.payment_entry = existing_payment_entry
-            transaction.status = STATUS_RECONCILED
-            transaction.error_message = None
-            _complete_existing_payment_entry(transaction, settings)
-            transaction.save(ignore_permissions=True)
+            _link_existing_payment_entry(transaction, settings, existing_payment_entry)
             _safe_record_reconciliation_attempt(
                 transaction,
                 source,
@@ -293,7 +285,7 @@ def manually_create_payment_entry(
         raise
 
 
-def _link_manual_payment_entry(transaction, settings, payment_entry_name):
+def _link_existing_payment_entry(transaction, settings, payment_entry_name):
     payment_entry = apply_selected_payment_entry(transaction, payment_entry_name=payment_entry_name)
     transaction.save(ignore_permissions=True)
     _complete_existing_payment_entry(transaction, settings)
@@ -377,25 +369,46 @@ def _set_transaction_references_from_payment_entry(transaction, payment_entry):
 
 
 def create_payment_entry(transaction, settings, payment_mapping, invoice=None, order=None, customer=None):
-    with _system_user():
-        payment_entry = (
-            _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice)
-            if invoice
-            else _get_order_payment_entry(transaction, settings, payment_mapping, order)
-            if order
-            else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
+    payment_entry = (
+        _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice)
+        if invoice
+        else _get_order_payment_entry(transaction, settings, payment_mapping, order)
+        if order
+        else _get_customer_payment_entry(transaction, settings, payment_mapping, customer)
+    )
+
+    _validate_payment_entry_accounts(payment_entry)
+    payment_entry.flags.ignore_permissions = True
+    payment_entry.insert(ignore_permissions=True)
+    transaction.payment_entry = payment_entry.name
+    _set_transaction_write_off_fields(transaction, settings, invoice)
+    transaction.flags.skip_payment_entry_completion = True
+    transaction.save(ignore_permissions=True)
+
+    if settings.auto_submit_payment_entry:
+        payment_entry.submit()
+
+    return payment_entry
+
+
+def _validate_payment_entry_accounts(payment_entry):
+    paid_from_type = (
+        frappe.get_cached_value("Account", payment_entry.paid_from, "account_type") if payment_entry.paid_from else None
+    )
+    if paid_from_type != "Receivable":
+        frappe.throw(
+            f"Paid From account {payment_entry.paid_from} must be an account of type Receivable. "
+            "Check the Default Receivable Account and Payment Account Mappings in M-Pesa Settings."
         )
 
-        payment_entry.insert(ignore_permissions=True)
-        transaction.payment_entry = payment_entry.name
-        _set_transaction_write_off_fields(transaction, settings, invoice)
-        transaction.flags.skip_payment_entry_completion = True
-        transaction.save(ignore_permissions=True)
-
-        if settings.auto_submit_payment_entry:
-            payment_entry.submit()
-
-        return payment_entry
+    paid_to_type = (
+        frappe.get_cached_value("Account", payment_entry.paid_to, "account_type") if payment_entry.paid_to else None
+    )
+    if paid_to_type not in ("Bank", "Cash"):
+        frappe.throw(
+            f"Paid To account {payment_entry.paid_to} must be an account of type Bank or Cash. "
+            "Check the Paid To Account in M-Pesa Settings."
+        )
 
 
 def get_existing_payment_entry_for_receipt(receipt_number):
@@ -815,6 +828,7 @@ def get_phone_variants(value):
 def _complete_existing_payment_entry(transaction, settings):
     payment_entry = frappe.get_doc("Payment Entry", transaction.payment_entry)
     if payment_entry.docstatus == 0 and settings.auto_submit_payment_entry:
+        payment_entry.flags.ignore_permissions = True
         payment_entry.submit()
 
 
@@ -838,18 +852,35 @@ def _is_small_difference_write_off_allowed(payment_amount, outstanding_amount, s
     return bool(get_small_difference_write_off_amount(payment_amount, outstanding_amount, settings))
 
 
-def _apply_small_difference_write_off(payment_entry, settings, write_off_amount):
-    if not settings.write_off_account:
-        frappe.throw("Write Off Account is required for small difference write off")
+def get_write_off_account(settings):
+    return settings.write_off_account or frappe.get_cached_value("Company", settings.company, "write_off_account")
 
-    if not settings.write_off_cost_center:
-        frappe.throw("Write Off Cost Center is required for small difference write off")
+
+def get_write_off_cost_center(settings):
+    return settings.write_off_cost_center or frappe.get_cached_value("Company", settings.company, "cost_center")
+
+
+def _apply_small_difference_write_off(payment_entry, settings, write_off_amount):
+    write_off_account = get_write_off_account(settings)
+    write_off_cost_center = get_write_off_cost_center(settings)
+
+    if not write_off_account:
+        frappe.throw(
+            "Write Off Account is required for small difference write off. "
+            "Set it in M-Pesa Settings or as the Company default Write Off Account."
+        )
+
+    if not write_off_cost_center:
+        frappe.throw(
+            "Write Off Cost Center is required for small difference write off. "
+            "Set it in M-Pesa Settings or as the Company default Cost Center."
+        )
 
     payment_entry.append(
         "deductions",
         {
-            "account": settings.write_off_account,
-            "cost_center": settings.write_off_cost_center,
+            "account": write_off_account,
+            "cost_center": write_off_cost_center,
             "amount": write_off_amount,
         },
     )
@@ -868,21 +899,8 @@ def _set_transaction_write_off_fields(transaction, settings, invoice=None):
         return
 
     transaction.write_off_amount = write_off_amount
-    transaction.write_off_account = settings.write_off_account
-    transaction.write_off_cost_center = settings.write_off_cost_center
-
-
-@contextmanager
-def _system_user():
-    original_user = frappe.session.user
-    if original_user != "Administrator":
-        frappe.set_user("Administrator")
-
-    try:
-        yield
-    finally:
-        if frappe.session.user != original_user:
-            frappe.set_user(original_user)
+    transaction.write_off_account = get_write_off_account(settings)
+    transaction.write_off_cost_center = get_write_off_cost_center(settings)
 
 
 def _record_reconciliation_attempt(transaction, source, status, message, increment=False):
