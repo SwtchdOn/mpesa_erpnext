@@ -410,6 +410,14 @@ def _validate_payment_entry_accounts(payment_entry):
             "Check the Paid To Account in M-Pesa Settings."
         )
 
+    company_currency = _get_company_currency(payment_entry.company)
+    paid_to_currency = _get_account_currency(payment_entry.paid_to, payment_entry.company)
+    if paid_to_currency != company_currency:
+        frappe.throw(
+            f"Paid To account {payment_entry.paid_to} is in {paid_to_currency}, but M-Pesa amounts are received "
+            f"in the company currency {company_currency}. Use a {company_currency} bank or cash account."
+        )
+
 
 def get_existing_payment_entry_for_receipt(receipt_number):
     if not receipt_number:
@@ -425,81 +433,99 @@ def get_existing_payment_entry_for_receipt(receipt_number):
 
 
 def _get_invoice_payment_entry(transaction, settings, payment_mapping, invoice):
+    exchange_rate = get_invoice_exchange_rate(invoice)
+
     try:
         from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
         payment_entry = get_payment_entry(
             "Sales Invoice",
             invoice.name,
-            party_amount=flt(transaction.amount),
+            party_amount=flt(flt(transaction.amount) / exchange_rate, 2),
             bank_amount=flt(transaction.amount),
             payment_type="Receive",
         )
     except Exception:
         payment_entry = _new_payment_entry()
 
-    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, invoice.company, invoice.customer)
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, invoice.company, invoice.customer, exchange_rate)
     payment_entry.paid_from = invoice.debit_to
 
     payment_entry.set("references", [])
+    payment_entry.set("deductions", [])
     outstanding = flt(invoice.outstanding_amount)
-    write_off_amount = get_small_difference_write_off_amount(transaction.amount, outstanding, settings)
-    allocated_amount = outstanding if write_off_amount else min(flt(transaction.amount), outstanding)
+    write_off_amount = get_small_difference_write_off_amount(
+        transaction.amount,
+        flt(outstanding * exchange_rate, 2),
+        settings,
+    )
+    plan = plan_reference_allocation(transaction.amount, outstanding, exchange_rate, write_off_amount)
+    payment_entry.paid_amount = plan["paid_amount"]
     payment_entry.append(
         "references",
         {
             "reference_doctype": "Sales Invoice",
             "reference_name": invoice.name,
-            "total_amount": invoice.grand_total,
+            "total_amount": flt(invoice.base_grand_total) if exchange_rate == 1 else flt(invoice.grand_total),
             "outstanding_amount": outstanding,
-            "allocated_amount": allocated_amount,
+            "allocated_amount": plan["allocated_amount"],
         },
     )
 
-    if write_off_amount:
-        _apply_small_difference_write_off(payment_entry, settings, write_off_amount)
+    if plan["deduction_amount"]:
+        _apply_small_difference_write_off(payment_entry, settings, plan["deduction_amount"])
 
     return payment_entry
 
 
 def _get_order_payment_entry(transaction, settings, payment_mapping, order):
+    receivable_account = _get_sales_order_receivable_account(order)
+    exchange_rate = get_sales_order_exchange_rate(order, receivable_account)
+
     try:
         from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
         payment_entry = get_payment_entry(
             "Sales Order",
             order.name,
-            party_amount=flt(transaction.amount),
+            party_amount=flt(flt(transaction.amount) / exchange_rate, 2),
             bank_amount=flt(transaction.amount),
             payment_type="Receive",
         )
     except Exception:
         payment_entry = _new_payment_entry()
 
-    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, order.company, order.customer)
-    payment_entry.paid_from = _get_sales_order_receivable_account(order)
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, order.company, order.customer, exchange_rate)
+    payment_entry.paid_from = receivable_account
 
     payment_entry.set("references", [])
-    outstanding = _get_sales_order_outstanding_amount(order)
-    allocated_amount = min(flt(transaction.amount), outstanding)
+    payment_entry.set("deductions", [])
+    outstanding = _get_sales_order_outstanding_amount(order, exchange_rate)
+    plan = plan_reference_allocation(transaction.amount, outstanding, exchange_rate)
+    payment_entry.paid_amount = plan["paid_amount"]
     payment_entry.append(
         "references",
         {
             "reference_doctype": "Sales Order",
             "reference_name": order.name,
-            "total_amount": _get_sales_order_total_amount(order),
+            "total_amount": _get_sales_order_total_amount(order, exchange_rate),
             "outstanding_amount": outstanding,
-            "allocated_amount": allocated_amount,
+            "allocated_amount": plan["allocated_amount"],
         },
     )
+
+    if plan["deduction_amount"]:
+        _apply_small_difference_write_off(payment_entry, settings, plan["deduction_amount"])
 
     return payment_entry
 
 
 def _get_customer_payment_entry(transaction, settings, payment_mapping, customer):
     payment_entry = _new_payment_entry()
-    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, settings.company, customer)
-    payment_entry.paid_from = _get_customer_receivable_account(customer, settings, payment_mapping)
+    paid_from = _get_customer_receivable_account(customer, settings, payment_mapping)
+    exchange_rate = _get_account_exchange_rate(paid_from, settings.company, transaction.transaction_date)
+    _apply_common_payment_fields(payment_entry, transaction, payment_mapping, settings.company, customer, exchange_rate)
+    payment_entry.paid_from = paid_from
     return payment_entry
 
 
@@ -510,8 +536,9 @@ def _new_payment_entry():
     return payment_entry
 
 
-def _apply_common_payment_fields(payment_entry, transaction, payment_mapping, company, customer):
+def _apply_common_payment_fields(payment_entry, transaction, payment_mapping, company, customer, exchange_rate=1):
     amount = flt(transaction.amount)
+    exchange_rate = flt(exchange_rate) or 1
 
     payment_entry.company = company
     payment_entry.posting_date = getdate(transaction.transaction_date) if transaction.transaction_date else getdate()
@@ -519,8 +546,10 @@ def _apply_common_payment_fields(payment_entry, transaction, payment_mapping, co
     payment_entry.party_type = "Customer"
     payment_entry.party = customer
     payment_entry.paid_to = payment_mapping["paid_to_account"]
-    payment_entry.paid_amount = amount
+    payment_entry.paid_amount = flt(amount / exchange_rate, 2) if exchange_rate != 1 else amount
     payment_entry.received_amount = amount
+    payment_entry.source_exchange_rate = exchange_rate
+    payment_entry.target_exchange_rate = 1
     payment_entry.reference_no = transaction.mpesa_receipt_number
     payment_entry.reference_date = payment_entry.posting_date
 
@@ -584,16 +613,18 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
     if flt(invoice.outstanding_amount) <= 0:
         frappe.throw(f"Sales Invoice {invoice.name} is already fully paid")
 
-    if flt(transaction.amount) < flt(invoice.outstanding_amount) and not _is_small_difference_write_off_allowed(
+    outstanding = get_invoice_outstanding_in_company_currency(invoice)
+
+    if flt(transaction.amount) < outstanding and not _is_small_difference_write_off_allowed(
         transaction.amount,
-        invoice.outstanding_amount,
+        outstanding,
         settings,
     ) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
 
-    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
+    if flt(transaction.amount) > outstanding and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
         transaction.amount,
-        invoice.outstanding_amount,
+        outstanding,
         settings,
     ):
         frappe.throw("Payment amount exceeds outstanding amount")
@@ -621,16 +652,18 @@ def _get_manual_sales_invoice(transaction, settings, sales_invoice=None):
     if flt(invoice.outstanding_amount) <= 0:
         frappe.throw(f"Sales Invoice {invoice.name} is already fully paid")
 
-    if flt(transaction.amount) < flt(invoice.outstanding_amount) and not _is_small_difference_write_off_allowed(
+    outstanding = get_invoice_outstanding_in_company_currency(invoice)
+
+    if flt(transaction.amount) < outstanding and not _is_small_difference_write_off_allowed(
         transaction.amount,
-        invoice.outstanding_amount,
+        outstanding,
         settings,
     ) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
 
-    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
+    if flt(transaction.amount) > outstanding and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
         transaction.amount,
-        invoice.outstanding_amount,
+        outstanding,
         settings,
     ):
         frappe.throw("Payment amount exceeds outstanding amount")
@@ -661,7 +694,8 @@ def _get_manual_sales_order(transaction, settings, sales_order=None):
     if flt(transaction.amount) <= 0:
         frappe.throw("Amount is zero")
 
-    outstanding = _get_sales_order_outstanding_amount(order)
+    exchange_rate = get_sales_order_exchange_rate(order)
+    outstanding = flt(_get_sales_order_outstanding_amount(order, exchange_rate) * exchange_rate, 2)
     if outstanding <= 0:
         frappe.throw(f"Sales Order {order.name} is already fully paid")
 
@@ -671,12 +705,15 @@ def _get_manual_sales_order(transaction, settings, sales_order=None):
     return order
 
 
-def _get_sales_order_total_amount(order):
-    return flt(order.get("base_rounded_total") or order.get("base_grand_total") or order.get("rounded_total") or order.get("grand_total"))
+def _get_sales_order_total_amount(order, exchange_rate=1):
+    if flt(exchange_rate) == 1:
+        return flt(order.get("base_rounded_total") or order.get("base_grand_total") or order.get("rounded_total") or order.get("grand_total"))
+
+    return flt(order.get("rounded_total") or order.get("grand_total"))
 
 
-def _get_sales_order_outstanding_amount(order):
-    return flt(order.get("outstanding_amount") or (_get_sales_order_total_amount(order) - flt(order.get("advance_paid"))))
+def _get_sales_order_outstanding_amount(order, exchange_rate=1):
+    return _get_sales_order_total_amount(order, exchange_rate) - flt(order.get("advance_paid"))
 
 
 def _get_manual_customer(customer):
@@ -845,6 +882,119 @@ def _is_submitted_or_draft_allowed(transaction, settings):
     return payment_entry.docstatus == 1 or not settings.auto_submit_payment_entry
 
 
+def _get_company_currency(company):
+    return frappe.get_cached_value("Company", company, "default_currency")
+
+
+def _get_account_currency(account, company):
+    return frappe.get_cached_value("Account", account, "account_currency") or _get_company_currency(company)
+
+
+def get_invoice_exchange_rate(invoice):
+    """Company-currency units per unit of the invoice's party account currency."""
+    company_currency = _get_company_currency(invoice.company)
+    party_account_currency = _get_account_currency(invoice.debit_to, invoice.company)
+    if party_account_currency == company_currency:
+        return 1
+
+    if party_account_currency != invoice.currency:
+        frappe.throw(
+            f"Sales Invoice {invoice.name} receivable account {invoice.debit_to} is in {party_account_currency}, "
+            f"which matches neither the invoice currency {invoice.currency} nor the company currency {company_currency}"
+        )
+
+    exchange_rate = flt(invoice.conversion_rate)
+    if not exchange_rate:
+        frappe.throw(
+            f"Sales Invoice {invoice.name} has no Exchange Rate to convert "
+            f"{party_account_currency} amounts to {company_currency}"
+        )
+
+    return exchange_rate
+
+
+def get_invoice_outstanding_in_company_currency(invoice):
+    return flt(flt(invoice.outstanding_amount) * get_invoice_exchange_rate(invoice), 2)
+
+
+def get_sales_order_exchange_rate(order, receivable_account=None):
+    """Company-currency units per unit of the order's party account currency."""
+    company_currency = _get_company_currency(order.company)
+    receivable_account = receivable_account or _get_sales_order_receivable_account(order)
+    party_account_currency = _get_account_currency(receivable_account, order.company)
+    if party_account_currency == company_currency:
+        return 1
+
+    if party_account_currency != order.currency:
+        frappe.throw(
+            f"Sales Order {order.name} receivable account {receivable_account} is in {party_account_currency}, "
+            f"which matches neither the order currency {order.currency} nor the company currency {company_currency}"
+        )
+
+    exchange_rate = flt(order.conversion_rate)
+    if not exchange_rate:
+        frappe.throw(
+            f"Sales Order {order.name} has no Exchange Rate to convert "
+            f"{party_account_currency} amounts to {company_currency}"
+        )
+
+    return exchange_rate
+
+
+def _get_account_exchange_rate(account, company, transaction_date=None):
+    company_currency = _get_company_currency(company)
+    account_currency = _get_account_currency(account, company)
+    if account_currency == company_currency:
+        return 1
+
+    try:
+        from erpnext.setup.utils import get_exchange_rate
+
+        exchange_rate = flt(get_exchange_rate(account_currency, company_currency, getdate(transaction_date) if transaction_date else getdate()))
+    except Exception:
+        exchange_rate = 0
+
+    if not exchange_rate:
+        frappe.throw(
+            f"No exchange rate found to convert {account_currency} to {company_currency} "
+            f"for receivable account {account}"
+        )
+
+    return exchange_rate
+
+
+def plan_reference_allocation(payment_amount, outstanding_amount, exchange_rate, write_off_amount=0):
+    """Allocation for one Payment Entry reference row.
+
+    payment_amount and write_off_amount are in company currency; outstanding_amount
+    is in the party account currency. Returns paid and allocated amounts in the
+    party account currency plus a company-currency write off deduction.
+
+    The deduction is only used in company currency: for foreign-currency rows,
+    ERPNext books the difference between the base paid and base received amounts
+    to the company Exchange Gain/Loss account automatically, so a small difference
+    is settled by setting the paid amount to the full outstanding amount, and
+    conversion rounding on partial payments needs no deduction at all."""
+    amount = flt(payment_amount)
+    outstanding = flt(outstanding_amount)
+    exchange_rate = flt(exchange_rate) or 1
+    outstanding_base = flt(outstanding * exchange_rate, 2)
+    paid = flt(amount / exchange_rate, 2) if exchange_rate != 1 else amount
+
+    if write_off_amount or amount >= outstanding_base:
+        # excess beyond the write off tolerance stays as unallocated customer credit
+        keep_excess_as_credit = amount > outstanding_base and not write_off_amount
+        deduction = 0
+        if not keep_excess_as_credit:
+            if exchange_rate == 1:
+                deduction = flt(outstanding_base - amount, 2)
+            else:
+                paid = outstanding
+        return {"paid_amount": paid, "allocated_amount": outstanding, "deduction_amount": deduction}
+
+    return {"paid_amount": paid, "allocated_amount": min(paid, outstanding), "deduction_amount": 0}
+
+
 def get_small_difference_write_off_amount(payment_amount, outstanding_amount, settings):
     """Signed difference to book to the write off account: positive when an
     underpayment shortfall is written off, negative when a small overpayment
@@ -905,13 +1055,26 @@ def _set_transaction_write_off_fields(transaction, settings, invoice=None):
     if not invoice:
         return
 
-    write_off_amount = get_small_difference_write_off_amount(transaction.amount, invoice.outstanding_amount, settings)
+    write_off_amount = get_small_difference_write_off_amount(
+        transaction.amount,
+        get_invoice_outstanding_in_company_currency(invoice),
+        settings,
+    )
     if not write_off_amount:
         return
 
     transaction.write_off_amount = write_off_amount
-    transaction.write_off_account = get_write_off_account(settings)
-    transaction.write_off_cost_center = get_write_off_cost_center(settings)
+    if get_invoice_exchange_rate(invoice) == 1:
+        transaction.write_off_account = get_write_off_account(settings)
+        transaction.write_off_cost_center = get_write_off_cost_center(settings)
+    else:
+        # ERPNext books foreign-currency payment differences to the company
+        # Exchange Gain/Loss account via an automatic deduction row
+        company = frappe.get_cached_value(
+            "Company", settings.company, ("exchange_gain_loss_account", "cost_center"), as_dict=True
+        )
+        transaction.write_off_account = company.exchange_gain_loss_account
+        transaction.write_off_cost_center = company.cost_center
 
 
 def _record_reconciliation_attempt(transaction, source, status, message, increment=False):

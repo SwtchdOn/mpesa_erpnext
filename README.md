@@ -28,6 +28,7 @@ The MVP flow is:
 - Partial payment support.
 - Overpayment blocking by default, configurable in settings.
 - Optional small difference write-off for M-Pesa whole-shilling rounding, covering both small shortfalls and small overpayments.
+- Multi-currency Sales Invoice and Sales Order references settled at the document exchange rate.
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
@@ -81,7 +82,7 @@ Configure:
 - `Write Off Account`
 - `Write Off Cost Center`
 
-When the difference between the invoice outstanding amount and the M-Pesa amount is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions row for the difference against the Write Off Account: a positive (loss) row for shortfalls, a negative (gain) row for overpayments. Small overpayments within the maximum are accepted even when `Allow Overpayments` is disabled, so rounded-up payments do not leave stray customer credits.
+When the difference between the invoice outstanding amount and the M-Pesa amount is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions row for the difference against the Write Off Account: a positive (loss) row for shortfalls, a negative (gain) row for overpayments. Small overpayments within the maximum are accepted even when `Allow Overpayments` is disabled, so rounded-up payments do not leave stray customer credits. For foreign-currency invoices the difference is booked to the Company Exchange Gain/Loss Account instead (see Multi-Currency References).
 
 Larger shortfalls continue to follow the normal partial payment settings. Larger overpayments still require `Allow Overpayments` and are kept as unallocated customer credit.
 
@@ -259,7 +260,7 @@ For invoice matches:
 - `Payment Type`: `Receive`
 - `Party Type`: `Customer`
 - `Party`: Sales Invoice Customer
-- `Paid Amount`: M-Pesa amount
+- `Paid Amount`: M-Pesa amount in the receivable account currency (converted at the invoice exchange rate for multi-currency invoices)
 - `Received Amount`: M-Pesa amount
 - `Paid From`: Sales Invoice receivable account
 - `Paid To`: resolved from Payment Account Mapping or settings default
@@ -273,8 +274,19 @@ For invoice matches:
 For manual Sales Order matches:
 
 - The receipt is posted as a Customer advance against the submitted Sales Order.
-- The Sales Order reference allocation is limited to the order total less existing advances.
+- The Sales Order reference allocation is limited to the order total less existing advances, in the receivable account currency.
 - The selected Sales Order and resulting Payment Entry are linked back to the M-Pesa Transaction.
+
+### Multi-Currency References
+
+Sales Invoices and Sales Orders in a foreign currency (for example USD invoices paid in KES) are supported when the customer's receivable account is in the document currency:
+
+- The KES amount is converted at the document's booked exchange rate, so the receivable is settled at the same rate it was booked at.
+- `Paid Amount` and the reference allocation are in the document currency; `Received Amount` stays in KES with the M-Pesa amount.
+- ERPNext automatically books the difference between the converted paid amount and the KES received amount to the Company `Exchange Gain/Loss Account` as a Payment Entry deduction. This covers both conversion rounding residues and small over/underpayments within the write-off tolerance, so the Payment Entry difference is always zero. Multi-currency payments therefore need the Company defaults `Exchange Gain/Loss Account` and `Cost Center` set; the M-Pesa Settings Write Off Account is only used for company-currency (KES) write-offs.
+- The small difference write-off tolerance and the partial payment / overpayment checks compare amounts in company currency (KES), so thresholds keep their meaning regardless of the invoice currency. The M-Pesa Transaction still records the signed `Write Off Amount`, with the Exchange Gain/Loss account as the write-off account.
+- Customer phone matches against a foreign-currency receivable convert at the current Currency Exchange rate for the transaction date; if no rate is found, the transaction goes to Exception with a clear message.
+- The `Paid To` bank or cash account must be in the company currency, since M-Pesa settles in KES.
 
 For manually linked Payment Entries:
 
