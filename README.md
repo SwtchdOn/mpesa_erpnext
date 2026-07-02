@@ -29,6 +29,7 @@ The MVP flow is:
 - Overpayment blocking by default, configurable in settings.
 - Optional small difference write-off for M-Pesa whole-shilling rounding, covering both small shortfalls and small overpayments.
 - Multi-currency Sales Invoice and Sales Order references settled at the document exchange rate.
+- Scan-to-pay M-Pesa QR codes for print formats via the `mpesa_qr` Jinja method.
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
@@ -252,6 +253,36 @@ Each reconciliation run appends a read-only attempt row to the transaction. The 
 When reconciliation fails, the transaction is marked `Exception`, the visible `Error Message` is updated, the attempt history records the failure source, and a Frappe Error Log entry is written with the traceback.
 
 Exception or unmatched transactions can be resolved manually from the transaction form. If the receipt was already created manually, select it in the Reconciliation section's `Payment Entry` field and save the transaction. Otherwise use **Create Payment Entry** to select a submitted Sales Invoice, submitted Sales Order, or Customer. New Payment Entries use the transaction receipt number as `Reference No`, and the app still links any existing non-cancelled Payment Entry with the same receipt before creating a new one.
+
+## Scan to Pay QR Codes
+
+Print formats can embed an M-Pesa scan-to-pay QR code that customers scan with the M-Pesa app. In the Print Format Builder, add a **Custom HTML** block containing:
+
+```jinja
+{{ mpesa_qr(doc) }}
+```
+
+Defaults when rendered on a Sales Invoice, Sales Order, or Quotation:
+
+- Paybill: the `Paybill Number` from M-Pesa Settings.
+- Account reference: the document name, so the payment reconciles back to the document automatically.
+- Amount: the document's outstanding amount in company currency (converted for multi-currency documents), rounded **up** to a whole shilling — M-Pesa only accepts whole-shilling amounts, and the sub-shilling excess is cleared by the small difference write-off.
+- Rendering: a PesaQR-style branded card — green border with a bold "SCAN WITH M-PESA" header — sized for reliable printing through wkhtmltopdf.
+- Nothing is rendered when the document has no outstanding amount, so paid invoices print without a QR code.
+
+Options:
+
+```jinja
+{{ mpesa_qr(doc, size=220) }}
+{{ mpesa_qr(doc, amount=500) }}
+{{ mpesa_qr(doc, paybill="888880", account="CUSTOM-REF") }}
+{{ mpesa_qr(doc, branded=False) }}          {# bare QR SVG, no card #}
+{{ mpesa_qr(doc, label="LIPA NA M-PESA") }} {# custom header text #}
+{{ mpesa_qr(amount=100, till="123456") }}
+{{ mpesa_qr(amount=100, phone="0712345678") }}
+```
+
+The QR payload uses the [PesaQR](https://github.com/DavidAmunga/pesaqr) format understood by the M-Pesa app: `PB|paybill|amount|account`, `BG|till|amount`, or `SM|phone|amount`. `mpesa_qr_payload(...)` is also exposed to Jinja if you want the raw payload string.
 
 ## Payment Entry Behaviour
 

@@ -10,9 +10,21 @@ frappe_utils_stub.flt = lambda value, precision=None: (
 frappe_utils_stub.getdate = lambda value=None: value
 frappe_utils_stub.now_datetime = lambda: "2026-05-24 00:00:00"
 frappe_stub.utils = frappe_utils_stub
+
+
+class StubValidationError(Exception):
+    pass
+
+
+def _stub_throw(message, *args, **kwargs):
+    raise StubValidationError(message)
+
+
+frappe_stub.throw = _stub_throw
 sys.modules.setdefault("frappe", frappe_stub)
 sys.modules.setdefault("frappe.utils", frappe_utils_stub)
 
+from swdpay.qr import format_qr_amount, mpesa_qr_payload
 from swdpay.reconciliation import (
     get_phone_variants,
     get_existing_payment_entry_for_receipt,
@@ -160,6 +172,28 @@ def test_plan_reference_allocation_keeps_large_foreign_overpayment_as_credit():
     assert plan["allocated_amount"] == 100
     assert plan["paid_amount"] == 103.85
     assert plan["deduction_amount"] == 0
+
+
+def test_mpesa_qr_payload_matches_pesaqr_formats():
+    assert mpesa_qr_payload(13000, paybill="888880", account="SINV-2026-00045") == "PB|888880|13000|SINV-2026-00045"
+    assert mpesa_qr_payload(100, till="123456") == "BG|123456|100"
+    assert mpesa_qr_payload(50, phone="0712345678") == "SM|0712345678|50"
+
+
+def test_mpesa_qr_amount_rounds_up_to_whole_shillings():
+    assert format_qr_amount(914.25) == "915"
+    assert format_qr_amount(914) == "914"
+    assert mpesa_qr_payload(914.25, paybill="888880", account="SINV-001") == "PB|888880|915|SINV-001"
+
+
+def test_mpesa_qr_payload_requires_target_and_account():
+    import pytest
+
+    with pytest.raises(StubValidationError):
+        mpesa_qr_payload(100)
+
+    with pytest.raises(StubValidationError):
+        mpesa_qr_payload(100, paybill="888880")
 
 
 def test_existing_payment_entry_lookup_ignores_blank_receipt(monkeypatch):
