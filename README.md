@@ -27,7 +27,7 @@ The MVP flow is:
 - Payment Entry creation and optional submission.
 - Partial payment support.
 - Overpayment blocking by default, configurable in settings.
-- Optional small difference write-off for M-Pesa whole-shilling rounding.
+- Optional small difference write-off for M-Pesa whole-shilling rounding, covering both small shortfalls and small overpayments.
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
@@ -72,7 +72,7 @@ Strict C2B validation is disabled by default so the validation URL does not acci
 
 ### Small Difference Write Off
 
-M-Pesa payments are whole-shilling payments, so invoices with cents can leave very small outstanding balances. Enable `Small Difference Write Off` if these differences should be cleared automatically.
+M-Pesa payments are whole-shilling payments, so invoices with cents can leave very small outstanding balances or very small overpayments when customers round up. Enable `Small Difference Write Off` if these differences should be cleared automatically in both directions.
 
 Configure:
 
@@ -81,9 +81,9 @@ Configure:
 - `Write Off Account`
 - `Write Off Cost Center`
 
-When the invoice outstanding amount is slightly higher than the M-Pesa amount and the difference is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions/loss row for the difference.
+When the difference between the invoice outstanding amount and the M-Pesa amount is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions row for the difference against the Write Off Account: a positive (loss) row for shortfalls, a negative (gain) row for overpayments. Small overpayments within the maximum are accepted even when `Allow Overpayments` is disabled, so rounded-up payments do not leave stray customer credits.
 
-Larger shortfalls continue to follow the normal partial payment settings. Overpayments are not handled by this write-off feature.
+Larger shortfalls continue to follow the normal partial payment settings. Larger overpayments still require `Allow Overpayments` and are kept as unallocated customer credit.
 
 ### Payment Account Mappings
 
@@ -116,7 +116,7 @@ The invoice must be:
 - Submitted.
 - In the configured Company.
 - Not fully paid.
-- Not overpaid unless overpayments are explicitly enabled.
+- Not overpaid unless overpayments are explicitly enabled or the excess is within the small difference write-off maximum.
 
 If valid, the Payment Entry is allocated to the Sales Invoice.
 
@@ -175,7 +175,7 @@ Use this endpoint when registering the Daraja Validation URL:
 The validation endpoint checks:
 
 - Amount is greater than zero.
-- Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled.
+- Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled or the excess is within the small difference write-off maximum.
 - Sales Order and Quotation references are accepted for downstream/manual handling.
 - Customer phone fallback is accepted when enabled.
 
@@ -268,6 +268,7 @@ For invoice matches:
 - `Reference Date`: M-Pesa transaction date
 - References table: Sales Invoice allocation
 - Small configured shortfalls: full invoice outstanding allocation plus a deductions/loss row against the configured write-off account and cost center
+- Small configured overpayments: full invoice outstanding allocation plus a negative deductions/gain row against the configured write-off account and cost center
 
 For manual Sales Order matches:
 

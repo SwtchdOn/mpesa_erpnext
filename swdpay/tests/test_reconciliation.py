@@ -90,7 +90,22 @@ def test_small_difference_write_off_requires_enabled_tolerance():
     assert get_small_difference_write_off_amount(914, 914.25, disabled_settings) == 0
     assert get_small_difference_write_off_amount(914, 914.25, enabled_settings) == 0.25
     assert get_small_difference_write_off_amount(913, 914.25, enabled_settings) == 0
-    assert get_small_difference_write_off_amount(915, 914.25, enabled_settings) == 0
+    assert get_small_difference_write_off_amount(914.25, 914.25, enabled_settings) == 0
+
+
+def test_small_difference_write_off_handles_overpayments():
+    disabled_settings = types.SimpleNamespace(
+        enable_small_difference_write_off=False,
+        max_write_off_difference=1,
+    )
+    enabled_settings = types.SimpleNamespace(
+        enable_small_difference_write_off=True,
+        max_write_off_difference=1,
+    )
+
+    assert get_small_difference_write_off_amount(915, 914.25, disabled_settings) == 0
+    assert get_small_difference_write_off_amount(915, 914.25, enabled_settings) == -0.75
+    assert get_small_difference_write_off_amount(916, 914.25, enabled_settings) == 0
 
 
 def test_existing_payment_entry_lookup_ignores_blank_receipt(monkeypatch):

@@ -128,6 +128,7 @@
       "options": "Payment Entry"
     },
     {
+      "description": "Positive when an invoice shortfall was written off, negative when a small overpayment was booked as a gain.",
       "fieldname": "write_off_amount",
       "fieldtype": "Currency",
       "label": "Write Off Amount",
@@ -190,7 +191,7 @@
       "read_only": 1
     }
   ],
-  "modified": "2026-05-19 00:00:00.000000",
+  "modified": "2026-07-02 00:00:00.000000",
   "module": "Swdpay",
   "name": "M-Pesa Transaction",
   "owner": "Administrator",

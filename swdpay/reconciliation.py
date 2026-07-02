@@ -591,7 +591,11 @@ def _get_valid_sales_invoice(transaction, settings, throw=True):
     ) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
 
-    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments:
+    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
+        transaction.amount,
+        invoice.outstanding_amount,
+        settings,
+    ):
         frappe.throw("Payment amount exceeds outstanding amount")
 
     return invoice
@@ -624,7 +628,11 @@ def _get_manual_sales_invoice(transaction, settings, sales_invoice=None):
     ) and not settings.allow_partial_payments:
         frappe.throw("Partial payments are disabled")
 
-    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments:
+    if flt(transaction.amount) > flt(invoice.outstanding_amount) and not settings.allow_overpayments and not _is_small_difference_write_off_allowed(
+        transaction.amount,
+        invoice.outstanding_amount,
+        settings,
+    ):
         frappe.throw("Payment amount exceeds outstanding amount")
 
     return invoice
@@ -838,11 +846,14 @@ def _is_submitted_or_draft_allowed(transaction, settings):
 
 
 def get_small_difference_write_off_amount(payment_amount, outstanding_amount, settings):
+    """Signed difference to book to the write off account: positive when an
+    underpayment shortfall is written off, negative when a small overpayment
+    (e.g. a customer rounding up to a whole shilling) is kept as a gain."""
     difference = flt(outstanding_amount) - flt(payment_amount)
-    if difference <= 0 or not settings.enable_small_difference_write_off:
+    if not difference or not settings.enable_small_difference_write_off:
         return 0
 
-    if difference > flt(settings.max_write_off_difference):
+    if abs(difference) > flt(settings.max_write_off_difference):
         return 0
 
     return difference
