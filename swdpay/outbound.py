@@ -265,12 +265,28 @@ def resolve_or_create_party(doc):
     return plan["party_type"], plan["party"]
 
 
+def _validate_payout_accounts(paid_from, paid_to, company):
+    paid_from_type, paid_from_currency = frappe.db.get_value("Account", paid_from, ["account_type", "account_currency"])
+    company_currency = frappe.get_cached_value("Company", company, "default_currency")
+    if paid_from_type not in ("Bank", "Cash"):
+        frappe.throw(f"Outbound Paid From Account {paid_from} must be a Bank or Cash account")
+    paid_to_currency = frappe.db.get_value("Account", paid_to, "account_currency")
+    for label, currency in (("Paid From", paid_from_currency), ("Paid To", paid_to_currency)):
+        if currency and currency != company_currency:
+            frappe.throw(f"{label} account currency {currency} does not match company currency {company_currency}")
+
+
 def create_payout_payment_entry(doc, settings):
+    if doc.payment_entry:
+        return doc.payment_entry  # idempotent: a retry must not double-book
+
     from erpnext.accounts.party import get_party_account
     from frappe.utils import now_datetime, getdate
 
     party_type, party = resolve_or_create_party(doc)
     paid_to = get_party_account(party_type, party, settings.company)
+
+    _validate_payout_accounts(settings.outbound_paid_from_account, paid_to, settings.company)
 
     payment_entry = frappe.new_doc("Payment Entry")
     payment_entry.update({
@@ -286,6 +302,7 @@ def create_payout_payment_entry(doc, settings):
         "received_amount": doc.amount,
         "reference_no": doc.mpesa_transaction_id,
         "reference_date": getdate(now_datetime()),
+        "custom_remarks": 1,
         "remarks": f"M-Pesa payout {doc.name}: {doc.payee_name}",
         "project": doc.project or None,
     })
