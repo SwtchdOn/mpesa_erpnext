@@ -14,6 +14,16 @@
     "consumer_secret",
     "passkey",
     "callback_secret",
+    "outbound_section",
+    "enable_outbound_payments",
+    "initiator_name",
+    "initiator_password",
+    "security_certificate",
+    "b2c_shortcode",
+    "max_request_amount",
+    "outbound_paid_from_account",
+    "outbound_mode_of_payment",
+    "callback_base_url",
     "accounting_section",
     "default_mode_of_payment",
     "paid_to_account",
@@ -76,6 +86,67 @@
       "fieldname": "callback_secret",
       "fieldtype": "Password",
       "label": "Callback Secret / Token"
+    },
+    {
+      "fieldname": "outbound_section",
+      "fieldtype": "Section Break",
+      "label": "Outbound Payments (B2B / B2C)"
+    },
+    {
+      "default": "0",
+      "fieldname": "enable_outbound_payments",
+      "fieldtype": "Check",
+      "label": "Enable Outbound Payments"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "initiator_name",
+      "fieldtype": "Data",
+      "label": "Initiator Name"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "initiator_password",
+      "fieldtype": "Password",
+      "label": "Initiator Password"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "security_certificate",
+      "fieldtype": "Code",
+      "label": "Daraja Security Certificate (PEM)"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "b2c_shortcode",
+      "fieldtype": "Data",
+      "label": "B2C Shortcode (defaults to Paybill)"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "max_request_amount",
+      "fieldtype": "Currency",
+      "label": "Max Request Amount"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "outbound_paid_from_account",
+      "fieldtype": "Link",
+      "label": "Outbound Paid From Account",
+      "options": "Account"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "outbound_mode_of_payment",
+      "fieldtype": "Link",
+      "label": "Outbound Mode of Payment",
+      "options": "Mode of Payment"
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "callback_base_url",
+      "fieldtype": "Data",
+      "label": "Callback Base URL (public site URL)"
     },
     {
       "fieldname": "accounting_section",

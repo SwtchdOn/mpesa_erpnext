@@ -30,6 +30,25 @@ class MPesaSettings(Document):
 
         self._validate_account_types()
 
+        if self.enable_outbound_payments:
+            missing = [
+                label for label, value in [
+                    ("Initiator Name", self.initiator_name),
+                    ("Initiator Password", self.initiator_password),
+                    ("Daraja Security Certificate", self.security_certificate),
+                    ("Outbound Paid From Account", self.outbound_paid_from_account),
+                    ("Outbound Mode of Payment", self.outbound_mode_of_payment),
+                    ("Callback Base URL", self.callback_base_url),
+                ] if not value
+            ]
+            if missing:
+                frappe.throw("Outbound payments require: " + ", ".join(missing))
+            account_type = frappe.get_cached_value("Account", self.outbound_paid_from_account, "account_type")
+            if account_type not in ("Bank", "Cash"):
+                frappe.throw(
+                    f"Outbound Paid From Account {self.outbound_paid_from_account} must be a Bank or Cash account."
+                )
+
     def _validate_account_types(self):
         receivable_accounts = [("Default Receivable Account", self.default_receivable_account)]
         paid_to_accounts = [("Paid To Account", self.paid_to_account)]
