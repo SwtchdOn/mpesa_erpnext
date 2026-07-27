@@ -263,3 +263,34 @@ def resolve_or_create_party(doc):
     if plan["party_type"] == "Supplier":
         frappe.db.set_value("Supplier", plan["party"], "mpesa_identifier", identifier)
     return plan["party_type"], plan["party"]
+
+
+def create_payout_payment_entry(doc, settings):
+    from erpnext.accounts.party import get_party_account
+    from frappe.utils import now_datetime, getdate
+
+    party_type, party = resolve_or_create_party(doc)
+    paid_to = get_party_account(party_type, party, settings.company)
+
+    payment_entry = frappe.new_doc("Payment Entry")
+    payment_entry.update({
+        "payment_type": "Pay",
+        "company": settings.company,
+        "posting_date": getdate(now_datetime()),
+        "mode_of_payment": settings.outbound_mode_of_payment,
+        "party_type": party_type,
+        "party": party,
+        "paid_from": settings.outbound_paid_from_account,
+        "paid_to": paid_to,
+        "paid_amount": doc.amount,
+        "received_amount": doc.amount,
+        "reference_no": doc.mpesa_transaction_id,
+        "reference_date": getdate(now_datetime()),
+        "remarks": f"M-Pesa payout {doc.name}: {doc.payee_name}",
+        "project": doc.project or None,
+    })
+    payment_entry.insert(ignore_permissions=True)
+    payment_entry.submit()
+
+    doc.db_set({"party_type": party_type, "party": party, "payment_entry": payment_entry.name})
+    return payment_entry.name
