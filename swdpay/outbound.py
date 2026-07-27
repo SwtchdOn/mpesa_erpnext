@@ -249,9 +249,8 @@ def resolve_or_create_party(doc):
     )
 
     if plan["create_supplier"]:
-        if frappe.db.exists("Supplier", plan["party"]):
-            supplier_name = plan["party"]
-        else:
+        supplier_name = frappe.db.get_value("Supplier", {"supplier_name": plan["party"]}, "name")
+        if not supplier_name:
             supplier = frappe.get_doc({
                 "doctype": "Supplier", "supplier_name": plan["party"],
                 "supplier_group": frappe.db.get_single_value("Buying Settings", "supplier_group") or "All Supplier Groups",
