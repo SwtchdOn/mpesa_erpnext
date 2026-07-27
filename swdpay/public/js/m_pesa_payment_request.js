@@ -2,8 +2,9 @@ frappe.ui.form.on("M-Pesa Payment Request", {
   refresh(frm) {
     if (frm.doc.status === "Requested" && frappe.user.has_role("M-Pesa Payment Approver")) {
       frm.add_custom_button(__("Approve & Pay"), () => {
+        const payee = frappe.utils.escape_html(frm.doc.payee_name || "");
         frappe.confirm(
-          __(`Send KES ${frm.doc.amount} to ${frm.doc.payee_name}?`),
+          __(`Send KES ${frm.doc.amount} to ${payee}?`),
           () =>
             frm
               .call({ method: "swdpay.outbound.approve_and_send", args: { name: frm.doc.name } })
