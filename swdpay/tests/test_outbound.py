@@ -7,7 +7,11 @@ StubValidationError = frappe_stub.StubValidationError
 
 import pytest
 
-from swdpay.outbound import ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request, parse_payout_result, parse_etims_invoice_number, plan_approval
+from swdpay.outbound import (
+    ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request,
+    parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
+    payout_outcome, handle_payout_callback, reconcile_payout,
+)
 
 
 def _request(**overrides):
@@ -193,9 +197,6 @@ def test_plan_approval_guards():
     assert "Cannot move" in plan_approval("Paid", enabled=True, has_role=True)
 
 
-from swdpay.outbound import plan_party_resolution
-
-
 def test_till_resolves_to_existing_supplier_by_identifier():
     plan = plan_party_resolution(_request(), supplier_by_identifier="Kamau Electricals Ltd",
                                  employee_matches=[], supplier_matches=[])
@@ -228,9 +229,6 @@ def test_phone_with_no_matches_creates_supplier():
     assert plan == {"party_type": "Supplier", "party": "Kamau Electricals", "create_supplier": True}
 
 
-from swdpay.outbound import payout_outcome
-
-
 def test_payout_outcome_maps_result_codes():
     assert payout_outcome({"result_code": 0}) == "Paid"
     assert payout_outcome({"result_code": 2001}) == "Failed"
@@ -241,3 +239,103 @@ def test_terminal_states_ignore_duplicate_callbacks():
     # Reconciliation must be a no-op once Paid/Failed — guarded by ALLOWED_TRANSITIONS.
     assert "Paid" not in ALLOWED_TRANSITIONS["Paid"]
     assert "Paid" not in ALLOWED_TRANSITIONS["Failed"]
+
+
+# --- handle_payout_callback / reconcile_payout: the money path, exercised against
+# the in-memory fakes registered in conftest.py (frappe_stub.db / get_doc / enqueue / log_error) ---
+
+def test_result_callback_marks_paid_and_stores_receipt(payout_env, monkeypatch):
+    payout_env.db.docs["MPPR-2026-00001"] = {
+        "status": "Sending", "conversation_id": "AG_20260727_abc123", "payment_entry": None,
+    }
+    pe_calls = []
+    monkeypatch.setattr(
+        "swdpay.outbound.create_payout_payment_entry",
+        lambda doc, settings: pe_calls.append(doc.name) or pe_calls.append("PE-0001"),
+    )
+
+    handle_payout_callback(_result_payload(code=0))
+
+    # Raw payload persisted before reconciliation is even queued.
+    assert payout_env.db.docs["MPPR-2026-00001"]["raw_result"]
+    assert len(payout_env.enqueued) == 1
+    job = payout_env.enqueued[0]
+    assert job["job_id"] == "swdpay-payout-reconcile-MPPR-2026-00001-result"
+    assert job["deduplicate"] is True
+    assert job["enqueue_after_commit"] is True
+
+    # Simulate the worker running the enqueued job with the exact kwargs recorded.
+    reconcile_payout(job["request_name"], job["parsed"], timeout=job["timeout"])
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Paid"
+    assert doc["receipt_pending"] == 1
+    assert doc["mpesa_transaction_id"] == "TGH7SK61SU"
+    assert doc["receiver_public_name"] == "254712345678 - John Kamau"
+    assert pe_calls == ["MPPR-2026-00001", "PE-0001"]
+
+
+def test_reconcile_payout_on_paid_doc_is_a_noop(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {
+        "status": "Paid", "conversation_id": "AG_20260727_abc123",
+        "payment_entry": "PE-0001", "mpesa_transaction_id": "TGH7SK61SU",
+    }
+    before = dict(payout_env.db.docs["MPPR-2026-00001"])
+
+    reconcile_payout("MPPR-2026-00001", {"result_code": 0, "conversation_id": "AG_20260727_abc123"})
+
+    assert payout_env.db.docs["MPPR-2026-00001"] == before
+
+
+def test_timeout_callback_leaves_status_sending(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Sending", "conversation_id": "AG_20260727_abc123"}
+
+    reconcile_payout("MPPR-2026-00001", {"conversation_id": "AG_20260727_abc123"}, timeout=True)
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Sending"
+    assert "queue timeout" in doc["error_message"].lower()
+
+
+def test_unknown_originator_logs_and_enqueues_nothing(payout_env):
+    handle_payout_callback(_result_payload(code=0))  # MPPR-2026-00001 was never seeded
+
+    assert payout_env.enqueued == []
+    assert len(payout_env.logged_errors) == 1
+    assert "unknown request" in payout_env.logged_errors[0]["title"]
+    assert payout_env.logged_errors[0]["message"]  # payload captured, not lost
+
+
+def test_conversation_id_mismatch_is_dropped_with_log(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Sending", "conversation_id": "AG_STORED"}
+
+    reconcile_payout("MPPR-2026-00001", {"result_code": 0, "conversation_id": "AG_DIFFERENT"})
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Sending"
+    assert len(payout_env.logged_errors) == 1
+    assert "ConversationID mismatch" in payout_env.logged_errors[0]["title"]
+
+
+def test_reconcile_payout_marks_failed_with_result_desc(payout_env):
+    payout_env.db.docs["MPPR-2026-00002"] = {"status": "Sending", "conversation_id": "AG_x"}
+
+    reconcile_payout("MPPR-2026-00002", {
+        "result_code": 2001, "result_desc": "The initiator information is invalid.",
+        "conversation_id": "AG_x",
+    })
+
+    doc = payout_env.db.docs["MPPR-2026-00002"]
+    assert doc["status"] == "Failed"
+    assert doc["error_message"] == "The initiator information is invalid."
+    assert doc["result_code"] == "2001"
+
+
+def test_reconcile_payout_stores_none_result_code_as_none_not_string(payout_env):
+    payout_env.db.docs["MPPR-2026-00003"] = {"status": "Sending", "conversation_id": None}
+
+    reconcile_payout("MPPR-2026-00003", {"result_code": None, "conversation_id": None})
+
+    doc = payout_env.db.docs["MPPR-2026-00003"]
+    assert doc["status"] == "Failed"
+    assert doc["result_code"] is None

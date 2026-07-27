@@ -324,22 +324,52 @@ def handle_payout_callback(payload, timeout=False):
     parsed = parse_payout_result(payload)
     name = parsed.get("originator_conversation_id")
     if not name or not frappe.db.exists("M-Pesa Payment Request", name):
-        frappe.log_error(title="swdpay payout callback for unknown request")
+        frappe.log_error(
+            title="swdpay payout callback for unknown request",
+            message=json.dumps(payload, default=str),
+        )
         return
 
     frappe.db.set_value("M-Pesa Payment Request", name, "raw_result", json.dumps(payload, default=str))
     frappe.enqueue(
         "swdpay.outbound.reconcile_payout", queue="short",
-        job_id=f"swdpay-payout-reconcile-{name}",  # dedup: pair with deduplicate below
+        # Separate ids per callback kind: a queued TIMEOUT job must not dedup-swallow
+        # the later RESULT enqueue (and vice versa) for the same request.
+        job_id=f"swdpay-payout-reconcile-{name}-{'timeout' if timeout else 'result'}",
         deduplicate=True,  # job_id alone does not dedupe in frappe; this makes the RQ id enforce it
+        enqueue_after_commit=True,  # don't let the worker start before the raw_result commit lands
         request_name=name, parsed=parsed, timeout=timeout,
     )
 
 
-def reconcile_payout(request_name, parsed, timeout=False):
+def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=True):
+    # Row-lock + re-read the guarded fields: a stale in-memory doc could otherwise
+    # let two concurrent callbacks both see "Sending" and both create a Payment Entry.
+    locked = frappe.db.get_value(
+        "M-Pesa Payment Request", request_name, ["status", "payment_entry", "conversation_id"], for_update=True
+    )
+    if not locked:
+        return
+    locked_status, locked_pe, locked_conversation = locked
+    if locked_status != "Sending":
+        return  # terminal or not-yet-dispatched: idempotent no-op
+
+    if (
+        verify_conversation
+        and locked_conversation
+        and parsed.get("conversation_id")
+        and parsed["conversation_id"] != locked_conversation
+    ):
+        # Guards against a spoofed/guessed OriginatorConversationID: the callback must
+        # carry the ConversationID Daraja returned for THIS request's dispatch.
+        frappe.log_error(
+            title=f"swdpay payout callback ConversationID mismatch: {request_name}",
+            message=f"stored={locked_conversation} callback={parsed.get('conversation_id')}",
+        )
+        return
+
     doc = frappe.get_doc("M-Pesa Payment Request", request_name)
-    if doc.status not in ("Sending", "Approved"):
-        return  # duplicate/late callback on a terminal state: idempotent no-op
+    doc.payment_entry = locked_pe  # trust the locked read, not a possibly-stale cache
 
     if timeout:
         # Queue timeout ≠ failure; leave for the watchdog to resolve authoritatively.
@@ -347,10 +377,11 @@ def reconcile_payout(request_name, parsed, timeout=False):
         return
 
     outcome = payout_outcome(parsed)
+    code = parsed.get("result_code")
     updates = {
         "status": outcome,
-        "conversation_id": parsed.get("conversation_id") or doc.conversation_id,
-        "result_code": str(parsed.get("result_code")),
+        "conversation_id": parsed.get("conversation_id") or locked_conversation,
+        "result_code": str(code) if code is not None else None,
         "result_desc": parsed.get("result_desc"),
     }
     if outcome == "Paid":
