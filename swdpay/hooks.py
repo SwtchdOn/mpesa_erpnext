@@ -9,6 +9,13 @@ doctype_js = {
     "M-Pesa Transaction": "public/js/m_pesa_transaction.js",
 }
 
+jinja = {
+    "methods": [
+        "swdpay.qr.mpesa_qr",
+        "swdpay.qr.mpesa_qr_payload",
+    ],
+}
+
 fixtures = [
     {
         "dt": "Role",

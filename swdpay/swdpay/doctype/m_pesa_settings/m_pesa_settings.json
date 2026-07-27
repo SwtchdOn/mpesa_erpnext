@@ -113,13 +113,14 @@
     },
     {
       "default": "0",
-      "description": "Automatically write off small invoice shortfalls caused by M-Pesa whole-shilling payments.",
+      "description": "Automatically book small differences caused by M-Pesa whole-shilling payments: invoice shortfalls are written off and small overpayments are recorded as a gain in the Write Off Account.",
       "fieldname": "enable_small_difference_write_off",
       "fieldtype": "Check",
       "label": "Enable Small Difference Write Off"
     },
     {
       "default": "1",
+      "description": "Maximum difference, in either direction, between the payment and the invoice outstanding amount that is booked to the Write Off Account. Overpayments above this are kept as customer credit when Allow Overpayments is enabled.",
       "fieldname": "max_write_off_difference",
       "fieldtype": "Currency",
       "label": "Maximum Write Off Difference"
@@ -171,7 +172,7 @@
     }
   ],
   "issingle": 1,
-  "modified": "2026-05-19 00:00:00.000000",
+  "modified": "2026-07-02 00:00:00.000000",
   "module": "Swdpay",
   "name": "M-Pesa Settings",
   "owner": "Administrator",

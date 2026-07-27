@@ -27,11 +27,13 @@ The MVP flow is:
 - Payment Entry creation and optional submission.
 - Partial payment support.
 - Overpayment blocking by default, configurable in settings.
-- Optional small difference write-off for M-Pesa whole-shilling rounding.
+- Optional small difference write-off for M-Pesa whole-shilling rounding, covering both small shortfalls and small overpayments.
+- Multi-currency Sales Invoice and Sales Order references settled at the document exchange rate.
+- Scan-to-pay M-Pesa QR codes for print formats via the `mpesa_qr` Jinja method.
 - Exception status and error message capture.
 - Reconciliation attempt history with attempt count and last attempt time.
 - Frappe Error Log entries for reconciliation failures.
-- Manual retry and ignore actions from the transaction form.
+- Manual retry, manual Payment Entry creation, and ignore actions from the transaction form.
 - Role-gated manual transaction imports.
 - Dedicated `M-Pesa Reconciliation Manager` role fixture.
 - Fail-closed callback token validation.
@@ -72,7 +74,7 @@ Strict C2B validation is disabled by default so the validation URL does not acci
 
 ### Small Difference Write Off
 
-M-Pesa payments are whole-shilling payments, so invoices with cents can leave very small outstanding balances. Enable `Small Difference Write Off` if these differences should be cleared automatically.
+M-Pesa payments are whole-shilling payments, so invoices with cents can leave very small outstanding balances or very small overpayments when customers round up. Enable `Small Difference Write Off` if these differences should be cleared automatically in both directions.
 
 Configure:
 
@@ -81,9 +83,9 @@ Configure:
 - `Write Off Account`
 - `Write Off Cost Center`
 
-When the invoice outstanding amount is slightly higher than the M-Pesa amount and the difference is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions/loss row for the difference.
+When the difference between the invoice outstanding amount and the M-Pesa amount is within the configured maximum, the Payment Entry allocates the full invoice outstanding amount and adds a deductions row for the difference against the Write Off Account: a positive (loss) row for shortfalls, a negative (gain) row for overpayments. Small overpayments within the maximum are accepted even when `Allow Overpayments` is disabled, so rounded-up payments do not leave stray customer credits. For foreign-currency invoices the difference is booked to the Company Exchange Gain/Loss Account instead (see Multi-Currency References).
 
-Larger shortfalls continue to follow the normal partial payment settings. Overpayments are not handled by this write-off feature.
+Larger shortfalls continue to follow the normal partial payment settings. Larger overpayments still require `Allow Overpayments` and are kept as unallocated customer credit.
 
 ### Payment Account Mappings
 
@@ -116,7 +118,7 @@ The invoice must be:
 - Submitted.
 - In the configured Company.
 - Not fully paid.
-- Not overpaid unless overpayments are explicitly enabled.
+- Not overpaid unless overpayments are explicitly enabled or the excess is within the small difference write-off maximum.
 
 If valid, the Payment Entry is allocated to the Sales Invoice.
 
@@ -175,7 +177,7 @@ Use this endpoint when registering the Daraja Validation URL:
 The validation endpoint checks:
 
 - Amount is greater than zero.
-- Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled.
+- Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled or the excess is within the small difference write-off maximum.
 - Sales Order and Quotation references are accepted for downstream/manual handling.
 - Customer phone fallback is accepted when enabled.
 
@@ -250,6 +252,38 @@ Each reconciliation run appends a read-only attempt row to the transaction. The 
 
 When reconciliation fails, the transaction is marked `Exception`, the visible `Error Message` is updated, the attempt history records the failure source, and a Frappe Error Log entry is written with the traceback.
 
+Exception or unmatched transactions can be resolved manually from the transaction form. If the receipt was already created manually, select it in the Reconciliation section's `Payment Entry` field and save the transaction. Otherwise use **Create Payment Entry** to select a submitted Sales Invoice, submitted Sales Order, or Customer. New Payment Entries use the transaction receipt number as `Reference No`, and the app still links any existing non-cancelled Payment Entry with the same receipt before creating a new one.
+
+## Scan to Pay QR Codes
+
+Print formats can embed an M-Pesa scan-to-pay QR code that customers scan with the M-Pesa app. In the Print Format Builder, add a **Custom HTML** block containing:
+
+```jinja
+{{ mpesa_qr(doc) }}
+```
+
+Defaults when rendered on a Sales Invoice, Sales Order, or Quotation:
+
+- Paybill: the `Paybill Number` from M-Pesa Settings.
+- Account reference: the document name, so the payment reconciles back to the document automatically.
+- Amount: the document's outstanding amount in company currency (converted for multi-currency documents), rounded **up** to a whole shilling — M-Pesa only accepts whole-shilling amounts, and the sub-shilling excess is cleared by the small difference write-off.
+- Rendering: a PesaQR-style branded card — green border with a bold "SCAN WITH M-PESA" header — sized for reliable printing through wkhtmltopdf.
+- Nothing is rendered when the document has no outstanding amount, so paid invoices print without a QR code.
+
+Options:
+
+```jinja
+{{ mpesa_qr(doc, size=220) }}
+{{ mpesa_qr(doc, amount=500) }}
+{{ mpesa_qr(doc, paybill="888880", account="CUSTOM-REF") }}
+{{ mpesa_qr(doc, branded=False) }}          {# bare QR SVG, no card #}
+{{ mpesa_qr(doc, label="LIPA NA M-PESA") }} {# custom header text #}
+{{ mpesa_qr(amount=100, till="123456") }}
+{{ mpesa_qr(amount=100, phone="0712345678") }}
+```
+
+The QR payload uses the [PesaQR](https://github.com/DavidAmunga/pesaqr) format understood by the M-Pesa app: `PB|paybill|amount|account`, `BG|till|amount`, or `SM|phone|amount`. `mpesa_qr_payload(...)` is also exposed to Jinja if you want the raw payload string.
+
 ## Payment Entry Behaviour
 
 For invoice matches:
@@ -257,7 +291,7 @@ For invoice matches:
 - `Payment Type`: `Receive`
 - `Party Type`: `Customer`
 - `Party`: Sales Invoice Customer
-- `Paid Amount`: M-Pesa amount
+- `Paid Amount`: M-Pesa amount in the receivable account currency (converted at the invoice exchange rate for multi-currency invoices)
 - `Received Amount`: M-Pesa amount
 - `Paid From`: Sales Invoice receivable account
 - `Paid To`: resolved from Payment Account Mapping or settings default
@@ -266,6 +300,31 @@ For invoice matches:
 - `Reference Date`: M-Pesa transaction date
 - References table: Sales Invoice allocation
 - Small configured shortfalls: full invoice outstanding allocation plus a deductions/loss row against the configured write-off account and cost center
+- Small configured overpayments: full invoice outstanding allocation plus a negative deductions/gain row against the configured write-off account and cost center
+
+For manual Sales Order matches:
+
+- The receipt is posted as a Customer advance against the submitted Sales Order.
+- The Sales Order reference allocation is limited to the order total less existing advances, in the receivable account currency.
+- The selected Sales Order and resulting Payment Entry are linked back to the M-Pesa Transaction.
+
+### Multi-Currency References
+
+Sales Invoices and Sales Orders in a foreign currency (for example USD invoices paid in KES) are supported when the customer's receivable account is in the document currency:
+
+- The KES amount is converted at the document's booked exchange rate, so the receivable is settled at the same rate it was booked at.
+- `Paid Amount` and the reference allocation are in the document currency; `Received Amount` stays in KES with the M-Pesa amount.
+- ERPNext automatically books the difference between the converted paid amount and the KES received amount to the Company `Exchange Gain/Loss Account` as a Payment Entry deduction. This covers both conversion rounding residues and small over/underpayments within the write-off tolerance, so the Payment Entry difference is always zero. Multi-currency payments therefore need the Company defaults `Exchange Gain/Loss Account` and `Cost Center` set; the M-Pesa Settings Write Off Account is only used for company-currency (KES) write-offs.
+- The small difference write-off tolerance and the partial payment / overpayment checks compare amounts in company currency (KES), so thresholds keep their meaning regardless of the invoice currency. The M-Pesa Transaction still records the signed `Write Off Amount`, with the Exchange Gain/Loss account as the write-off account.
+- Customer phone matches against a foreign-currency receivable convert at the current Currency Exchange rate for the transaction date; if no rate is found, the transaction goes to Exception with a clear message.
+- The `Paid To` bank or cash account must be in the company currency, since M-Pesa settles in KES.
+
+For manually linked Payment Entries:
+
+- Cancelled Payment Entries are rejected.
+- The Payment Entry must be a Customer Receive payment with an amount matching the M-Pesa transaction.
+- If the Payment Entry has a `Reference No`, it must match the M-Pesa receipt number.
+- Sales Invoice and Sales Order references on the Payment Entry are copied back to the M-Pesa Transaction where present.
 
 For customer phone matches:
 

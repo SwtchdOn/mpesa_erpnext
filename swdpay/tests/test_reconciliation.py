@@ -4,13 +4,27 @@ import types
 
 frappe_stub = types.ModuleType("frappe")
 frappe_utils_stub = types.ModuleType("frappe.utils")
-frappe_utils_stub.flt = lambda value: float(value or 0)
+frappe_utils_stub.flt = lambda value, precision=None: (
+    round(float(value or 0), precision) if precision is not None else float(value or 0)
+)
 frappe_utils_stub.getdate = lambda value=None: value
 frappe_utils_stub.now_datetime = lambda: "2026-05-24 00:00:00"
 frappe_stub.utils = frappe_utils_stub
+
+
+class StubValidationError(Exception):
+    pass
+
+
+def _stub_throw(message, *args, **kwargs):
+    raise StubValidationError(message)
+
+
+frappe_stub.throw = _stub_throw
 sys.modules.setdefault("frappe", frappe_stub)
 sys.modules.setdefault("frappe.utils", frappe_utils_stub)
 
+from swdpay.qr import format_qr_amount, mpesa_qr_payload
 from swdpay.reconciliation import (
     get_phone_variants,
     get_existing_payment_entry_for_receipt,
@@ -18,6 +32,7 @@ from swdpay.reconciliation import (
     is_hashed_msisdn,
     normalize_payload,
     normalize_phone,
+    plan_reference_allocation,
 )
 
 
@@ -90,7 +105,95 @@ def test_small_difference_write_off_requires_enabled_tolerance():
     assert get_small_difference_write_off_amount(914, 914.25, disabled_settings) == 0
     assert get_small_difference_write_off_amount(914, 914.25, enabled_settings) == 0.25
     assert get_small_difference_write_off_amount(913, 914.25, enabled_settings) == 0
-    assert get_small_difference_write_off_amount(915, 914.25, enabled_settings) == 0
+    assert get_small_difference_write_off_amount(914.25, 914.25, enabled_settings) == 0
+
+
+def test_small_difference_write_off_handles_overpayments():
+    disabled_settings = types.SimpleNamespace(
+        enable_small_difference_write_off=False,
+        max_write_off_difference=1,
+    )
+    enabled_settings = types.SimpleNamespace(
+        enable_small_difference_write_off=True,
+        max_write_off_difference=1,
+    )
+
+    assert get_small_difference_write_off_amount(915, 914.25, disabled_settings) == 0
+    assert get_small_difference_write_off_amount(915, 914.25, enabled_settings) == -0.75
+    assert get_small_difference_write_off_amount(916, 914.25, enabled_settings) == 0
+
+
+def test_plan_reference_allocation_company_currency_matches_legacy_behaviour():
+    exact = plan_reference_allocation(1000, 1000, 1)
+    assert exact == {"paid_amount": 1000, "allocated_amount": 1000, "deduction_amount": 0}
+
+    write_off = plan_reference_allocation(999.5, 1000, 1, write_off_amount=0.5)
+    assert write_off == {"paid_amount": 999.5, "allocated_amount": 1000, "deduction_amount": 0.5}
+
+    partial = plan_reference_allocation(400, 1000, 1)
+    assert partial == {"paid_amount": 400, "allocated_amount": 400, "deduction_amount": 0}
+
+    overpay_advance = plan_reference_allocation(1200, 1000, 1)
+    assert overpay_advance == {"paid_amount": 1200, "allocated_amount": 1000, "deduction_amount": 0}
+
+
+def test_plan_reference_allocation_converts_foreign_currency_references():
+    # foreign-currency rows never carry a write off deduction: ERPNext books
+    # the base paid vs base received difference to Exchange Gain/Loss itself
+
+    # USD 100 invoice at 130 KES/USD, customer pays the exact KES equivalent
+    exact = plan_reference_allocation(13000, 100, 130)
+    assert exact == {"paid_amount": 100, "allocated_amount": 100, "deduction_amount": 0}
+
+    # small KES shortfall within the write off tolerance settles the invoice
+    # fully; paying the full outstanding leaves the 0.5 KES gap to ERPNext
+    write_off = plan_reference_allocation(12999.5, 100, 130, write_off_amount=0.5)
+    assert write_off == {"paid_amount": 100, "allocated_amount": 100, "deduction_amount": 0}
+
+    # small KES overpayment within the tolerance settles the same way
+    rounding_gain = plan_reference_allocation(13000.5, 100, 130, write_off_amount=-0.5)
+    assert rounding_gain == {"paid_amount": 100, "allocated_amount": 100, "deduction_amount": 0}
+
+
+def test_plan_reference_allocation_handles_foreign_partial_payments():
+    # 6,500 KES against a USD 100 invoice at a ragged 133.7 rate:
+    # 6,500 / 133.7 = 48.6163... rounds to 48.62 USD; the 0.49 KES conversion
+    # residue is booked by ERPNext as exchange gain/loss
+    plan = plan_reference_allocation(6500, 100, 133.7)
+
+    assert plan["paid_amount"] == 48.62
+    assert plan["allocated_amount"] == 48.62
+    assert plan["deduction_amount"] == 0
+
+
+def test_plan_reference_allocation_keeps_large_foreign_overpayment_as_credit():
+    plan = plan_reference_allocation(13500, 100, 130)
+
+    assert plan["allocated_amount"] == 100
+    assert plan["paid_amount"] == 103.85
+    assert plan["deduction_amount"] == 0
+
+
+def test_mpesa_qr_payload_matches_pesaqr_formats():
+    assert mpesa_qr_payload(13000, paybill="888880", account="SINV-2026-00045") == "PB|888880|13000|SINV-2026-00045"
+    assert mpesa_qr_payload(100, till="123456") == "BG|123456|100"
+    assert mpesa_qr_payload(50, phone="0712345678") == "SM|0712345678|50"
+
+
+def test_mpesa_qr_amount_rounds_up_to_whole_shillings():
+    assert format_qr_amount(914.25) == "915"
+    assert format_qr_amount(914) == "914"
+    assert mpesa_qr_payload(914.25, paybill="888880", account="SINV-001") == "PB|888880|915|SINV-001"
+
+
+def test_mpesa_qr_payload_requires_target_and_account():
+    import pytest
+
+    with pytest.raises(StubValidationError):
+        mpesa_qr_payload(100)
+
+    with pytest.raises(StubValidationError):
+        mpesa_qr_payload(100, paybill="888880")
 
 
 def test_existing_payment_entry_lookup_ignores_blank_receipt(monkeypatch):
