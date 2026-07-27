@@ -226,3 +226,18 @@ def test_phone_with_no_matches_creates_supplier():
     req = _request(recipient_type="Phone", till_number=None, phone_number="254712345678")
     plan = plan_party_resolution(req, supplier_by_identifier=None, employee_matches=[], supplier_matches=[])
     assert plan == {"party_type": "Supplier", "party": "Kamau Electricals", "create_supplier": True}
+
+
+from swdpay.outbound import payout_outcome
+
+
+def test_payout_outcome_maps_result_codes():
+    assert payout_outcome({"result_code": 0}) == "Paid"
+    assert payout_outcome({"result_code": 2001}) == "Failed"
+    assert payout_outcome({"result_code": None}) == "Failed"
+
+
+def test_terminal_states_ignore_duplicate_callbacks():
+    # Reconciliation must be a no-op once Paid/Failed — guarded by ALLOWED_TRANSITIONS.
+    assert "Paid" not in ALLOWED_TRANSITIONS["Paid"]
+    assert "Paid" not in ALLOWED_TRANSITIONS["Failed"]

@@ -74,3 +74,23 @@ def _get_callback_payload():
     payload.pop("cmd", None)
     payload.pop("token", None)
     return payload
+
+
+@frappe.whitelist(allow_guest=True)
+def payout_result(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_payout_callback
+
+    handle_payout_callback(_get_callback_payload())
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+@frappe.whitelist(allow_guest=True)
+def payout_timeout(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_payout_callback
+
+    handle_payout_callback(_get_callback_payload(), timeout=True)
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})

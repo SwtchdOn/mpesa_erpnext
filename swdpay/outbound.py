@@ -311,3 +311,63 @@ def create_payout_payment_entry(doc, settings):
 
     doc.db_set({"party_type": party_type, "party": party, "payment_entry": payment_entry.name})
     return payment_entry.name
+
+
+def payout_outcome(parsed):
+    return "Paid" if parsed.get("result_code") == 0 else "Failed"
+
+
+def handle_payout_callback(payload, timeout=False):
+    """Raw-first: persist the payload on the request, then queue reconciliation."""
+    import json
+
+    parsed = parse_payout_result(payload)
+    name = parsed.get("originator_conversation_id")
+    if not name or not frappe.db.exists("M-Pesa Payment Request", name):
+        frappe.log_error(title="swdpay payout callback for unknown request")
+        return
+
+    frappe.db.set_value("M-Pesa Payment Request", name, "raw_result", json.dumps(payload, default=str))
+    frappe.enqueue(
+        "swdpay.outbound.reconcile_payout", queue="short",
+        job_id=f"swdpay-payout-reconcile-{name}",  # dedup: pair with deduplicate below
+        deduplicate=True,  # job_id alone does not dedupe in frappe; this makes the RQ id enforce it
+        request_name=name, parsed=parsed, timeout=timeout,
+    )
+
+
+def reconcile_payout(request_name, parsed, timeout=False):
+    doc = frappe.get_doc("M-Pesa Payment Request", request_name)
+    if doc.status not in ("Sending", "Approved"):
+        return  # duplicate/late callback on a terminal state: idempotent no-op
+
+    if timeout:
+        # Queue timeout ≠ failure; leave for the watchdog to resolve authoritatively.
+        doc.db_set("error_message", "Daraja queue timeout — awaiting status check")
+        return
+
+    outcome = payout_outcome(parsed)
+    updates = {
+        "status": outcome,
+        "conversation_id": parsed.get("conversation_id") or doc.conversation_id,
+        "result_code": str(parsed.get("result_code")),
+        "result_desc": parsed.get("result_desc"),
+    }
+    if outcome == "Paid":
+        updates.update({
+            "mpesa_transaction_id": parsed.get("transaction_id"),
+            "receiver_public_name": parsed.get("receiver_public_name"),
+            "receipt_pending": 1,
+        })
+    else:
+        updates["error_message"] = parsed.get("result_desc") or "Payment failed"
+    doc.db_set(updates)
+
+    if outcome == "Paid":
+        settings = frappe.get_single("M-Pesa Settings")
+        try:
+            create_payout_payment_entry(doc, settings)
+        except Exception:
+            # Money moved; accounting failed. Keep Paid, surface the error for ops.
+            doc.db_set("error_message", "Paid, but Payment Entry creation failed — see Error Log")
+            frappe.log_error(title=f"swdpay payout PE failed: {request_name}")
