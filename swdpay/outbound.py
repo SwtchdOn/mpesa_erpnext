@@ -471,7 +471,13 @@ def resolve_stuck_payouts():
     for row in stuck:
         if row["modified"] < age_cap_cutoff:
             if row.get("error_message") != STUCK_AGE_CAP_MESSAGE:
-                frappe.db.set_value("M-Pesa Payment Request", row["name"], "error_message", STUCK_AGE_CAP_MESSAGE)
+                # update_modified=False: this stamp must not reset `modified`, or the
+                # doc falls back out of the >24h window and re-enters the query loop
+                # forever — defeating the age cap it's meant to enforce.
+                frappe.db.set_value(
+                    "M-Pesa Payment Request", row["name"], "error_message", STUCK_AGE_CAP_MESSAGE,
+                    update_modified=False,
+                )
             continue
         queryable.append(row["name"])
 
