@@ -45,3 +45,44 @@ def validate_payment_request(doc, max_amount=None):
         doc.phone_number = normalized
     else:
         frappe.throw("Recipient type is required")
+
+
+def _callback_url(callback_base, callback_token, method):
+    return f"{callback_base}/api/method/swdpay.api.callbacks.{method}?token={callback_token}"
+
+
+def build_payout_request(request, *, initiator_name, security_credential, shortcode,
+                         b2c_shortcode, callback_base, callback_token):
+    remarks = (request.description or "Field purchase")[:100]
+    common = {
+        "OriginatorConversationID": request.name,
+        "SecurityCredential": security_credential,
+        "Amount": int(request.amount),
+        "Remarks": remarks,
+        "ResultURL": _callback_url(callback_base, callback_token, "payout_result"),
+        "QueueTimeOutURL": _callback_url(callback_base, callback_token, "payout_timeout"),
+    }
+
+    if request.recipient_type == "Phone":
+        body = {
+            **common,
+            "InitiatorName": initiator_name,
+            "CommandID": "BusinessPayment",
+            "PartyA": b2c_shortcode,
+            "PartyB": request.phone_number,
+            "Occasion": (request.project or "")[:100] if getattr(request, "project", None) else "",
+        }
+        return {"path": "/mpesa/b2c/v3/paymentrequest", "body": body}
+
+    body = {
+        **common,
+        "Initiator": initiator_name,
+        "CommandID": "BusinessBuyGoods" if request.recipient_type == "Buy Goods Till" else "BusinessPayBill",
+        "SenderIdentifierType": "4",
+        "RecieverIdentifierType": "4",
+        "PartyA": shortcode,
+        "PartyB": request.till_number if request.recipient_type == "Buy Goods Till" else request.paybill_number,
+    }
+    if request.recipient_type == "Paybill":
+        body["AccountReference"] = request.account_reference
+    return {"path": "/mpesa/b2b/v1/paymentrequest", "body": body}
