@@ -1,4 +1,5 @@
 import frappe
+from urllib.parse import parse_qs, urlparse
 
 from swdpay.reconciliation import normalize_phone
 
@@ -86,3 +87,33 @@ def build_payout_request(request, *, initiator_name, security_credential, shortc
     if request.recipient_type == "Paybill":
         body["AccountReference"] = request.account_reference
     return {"path": "/mpesa/b2b/v1/paymentrequest", "body": body}
+
+
+def parse_payout_result(payload):
+    result = (payload or {}).get("Result") or {}
+    params = {}
+    for row in ((result.get("ResultParameters") or {}).get("ResultParameter") or []):
+        if isinstance(row, dict) and row.get("Key"):
+            params[row["Key"]] = row.get("Value")
+
+    receiver = params.get("ReceiverPartyPublicName") or params.get("CreditPartyPublicName")
+    code = result.get("ResultCode")
+    return {
+        "originator_conversation_id": result.get("OriginatorConversationID"),
+        "conversation_id": result.get("ConversationID"),
+        "result_code": int(code) if code is not None else None,
+        "result_desc": result.get("ResultDesc"),
+        "transaction_id": result.get("TransactionID") or params.get("TransactionReceipt"),
+        "receiver_public_name": receiver,
+    }
+
+
+def parse_etims_invoice_number(url):
+    if not url:
+        return None
+    try:
+        query = parse_qs(urlparse(url).query)
+    except ValueError:
+        return None
+    values = query.get("invoiceNo") or query.get("invoiceno") or []
+    return values[0] if values else None

@@ -7,7 +7,7 @@ StubValidationError = frappe_stub.StubValidationError
 
 import pytest
 
-from swdpay.outbound import ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request
+from swdpay.outbound import ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request, parse_payout_result, parse_etims_invoice_number
 
 
 def _request(**overrides):
@@ -111,3 +111,44 @@ def test_b2b_bodies_carry_originator_conversation_id():
     req = _request()
     req.name = "MPPR-2026-00008"
     assert build_payout_request(req, **_KW)["body"]["OriginatorConversationID"] == "MPPR-2026-00008"
+
+
+def _result_payload(code=0, params=None):
+    return {"Result": {
+        "ResultType": 0, "ResultCode": code, "ResultDesc": "The service request is processed successfully.",
+        "OriginatorConversationID": "MPPR-2026-00001", "ConversationID": "AG_20260727_abc123",
+        "TransactionID": "TGH7SK61SU",
+        "ResultParameters": {"ResultParameter": params or [
+            {"Key": "TransactionAmount", "Value": 1500},
+            {"Key": "TransactionReceipt", "Value": "TGH7SK61SU"},
+            {"Key": "ReceiverPartyPublicName", "Value": "254712345678 - John Kamau"},
+        ]},
+    }}
+
+
+def test_parse_payout_result_flattens_success():
+    parsed = parse_payout_result(_result_payload())
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00001"
+    assert parsed["conversation_id"] == "AG_20260727_abc123"
+    assert parsed["result_code"] == 0
+    assert parsed["transaction_id"] == "TGH7SK61SU"
+    assert parsed["receiver_public_name"] == "254712345678 - John Kamau"
+
+
+def test_parse_payout_result_reads_b2b_credit_party_name():
+    payload = _result_payload(params=[{"Key": "CreditPartyPublicName", "Value": "832909 - Kamau Electricals"}])
+    assert parse_payout_result(payload)["receiver_public_name"] == "832909 - Kamau Electricals"
+
+
+def test_parse_payout_result_handles_failure_without_parameters():
+    payload = {"Result": {"ResultCode": 2001, "ResultDesc": "The initiator information is invalid.",
+                          "OriginatorConversationID": "MPPR-2026-00002", "ConversationID": "AG_x"}}
+    parsed = parse_payout_result(payload)
+    assert parsed["result_code"] == 2001 and parsed["transaction_id"] is None
+
+
+def test_parse_etims_invoice_number_from_kra_url():
+    url = "https://itax.kra.go.ke/KRA-Portal/invoiceChk.htm?actionCode=loadPage&invoiceNo=0010023456789"
+    assert parse_etims_invoice_number(url) == "0010023456789"
+    assert parse_etims_invoice_number("https://example.com/no-invoice") is None
+    assert parse_etims_invoice_number(None) is None
