@@ -152,3 +152,35 @@ def test_parse_etims_invoice_number_from_kra_url():
     assert parse_etims_invoice_number(url) == "0010023456789"
     assert parse_etims_invoice_number("https://example.com/no-invoice") is None
     assert parse_etims_invoice_number(None) is None
+
+
+def test_daraja_base_url_by_environment():
+    from swdpay.daraja import daraja_base_url
+    assert daraja_base_url("Sandbox") == "https://sandbox.safaricom.co.ke"
+    assert daraja_base_url("Production") == "https://api.safaricom.co.ke"
+
+
+def test_encrypt_security_credential_round_trips_with_test_key():
+    from base64 import b64decode
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.x509.oid import NameOID
+    from datetime import datetime, timedelta, timezone
+
+    from swdpay.daraja import encrypt_security_credential
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test")])
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+
+    encrypted = encrypt_security_credential("s3cret-pass", pem)
+    decrypted = key.decrypt(b64decode(encrypted), padding.PKCS1v15())
+    assert decrypted == b"s3cret-pass"
