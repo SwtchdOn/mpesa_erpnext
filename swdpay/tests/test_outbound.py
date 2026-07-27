@@ -1,30 +1,9 @@
 import sys
 import types
 
-frappe_stub = sys.modules.get("frappe") or types.ModuleType("frappe")
-frappe_utils_stub = sys.modules.get("frappe.utils") or types.ModuleType("frappe.utils")
-frappe_utils_stub.flt = getattr(
-    frappe_utils_stub, "flt",
-    lambda value, precision=None: (
-        round(float(value or 0), precision) if precision is not None else float(value or 0)
-    )
-)
-frappe_utils_stub.getdate = getattr(frappe_utils_stub, "getdate", lambda value=None: value)
-frappe_utils_stub.now_datetime = getattr(frappe_utils_stub, "now_datetime", lambda: "2026-07-27 00:00:00")
-frappe_stub.utils = frappe_utils_stub
-
-
-class StubValidationError(Exception):
-    pass
-
-
-def _stub_throw(message, *args, **kwargs):
-    raise StubValidationError(message)
-
-
-frappe_stub.throw = _stub_throw
-sys.modules.setdefault("frappe", frappe_stub)
-sys.modules.setdefault("frappe.utils", frappe_utils_stub)
+# Use the canonical frappe stub registered by conftest.py
+frappe_stub = sys.modules["frappe"]
+StubValidationError = frappe_stub.StubValidationError
 
 import pytest
 

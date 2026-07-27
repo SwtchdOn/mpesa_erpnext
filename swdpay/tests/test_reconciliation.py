@@ -1,28 +1,9 @@
 import sys
 import types
 
-
-frappe_stub = types.ModuleType("frappe")
-frappe_utils_stub = types.ModuleType("frappe.utils")
-frappe_utils_stub.flt = lambda value, precision=None: (
-    round(float(value or 0), precision) if precision is not None else float(value or 0)
-)
-frappe_utils_stub.getdate = lambda value=None: value
-frappe_utils_stub.now_datetime = lambda: "2026-05-24 00:00:00"
-frappe_stub.utils = frappe_utils_stub
-
-
-class StubValidationError(Exception):
-    pass
-
-
-def _stub_throw(message, *args, **kwargs):
-    raise StubValidationError(message)
-
-
-frappe_stub.throw = _stub_throw
-sys.modules.setdefault("frappe", frappe_stub)
-sys.modules.setdefault("frappe.utils", frappe_utils_stub)
+# Use the canonical frappe stub registered by conftest.py
+frappe_stub = sys.modules["frappe"]
+StubValidationError = frappe_stub.StubValidationError
 
 from swdpay.qr import format_qr_amount, mpesa_qr_payload
 from swdpay.reconciliation import (
