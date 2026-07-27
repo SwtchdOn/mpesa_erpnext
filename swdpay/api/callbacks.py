@@ -94,3 +94,13 @@ def payout_timeout(token=None):
     handle_payout_callback(_get_callback_payload(), timeout=True)
     frappe.db.commit()
     frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+@frappe.whitelist(allow_guest=True)
+def status_result(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_status_result
+
+    handle_status_result(_get_callback_payload())
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})

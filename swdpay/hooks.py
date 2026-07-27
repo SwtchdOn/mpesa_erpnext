@@ -16,6 +16,12 @@ jinja = {
     ],
 }
 
+scheduler_events = {
+    "cron": {
+        "*/5 * * * *": ["swdpay.outbound.resolve_stuck_payouts"],
+    },
+}
+
 fixtures = [
     {
         "dt": "Role",

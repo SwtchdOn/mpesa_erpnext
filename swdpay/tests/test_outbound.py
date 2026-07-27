@@ -11,6 +11,7 @@ from swdpay.outbound import (
     ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request,
     parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
     payout_outcome, handle_payout_callback, reconcile_payout,
+    parse_status_result, handle_status_result,
 )
 
 
@@ -339,3 +340,89 @@ def test_reconcile_payout_stores_none_result_code_as_none_not_string(payout_env)
     doc = payout_env.db.docs["MPPR-2026-00003"]
     assert doc["status"] == "Failed"
     assert doc["result_code"] is None
+
+
+# --- parse_status_result: tolerant mapping of a Daraja Transaction Status result ---
+
+def _status_result_payload(status="Completed", params=None):
+    base_params = [
+        {"Key": "TransactionStatus", "Value": status},
+        {"Key": "OriginatorConversationID", "Value": "MPPR-2026-00001"},
+        {"Key": "ConversationID", "Value": "AG_query_999"},
+        {"Key": "ReceiptNo", "Value": "TGH7SK61SU"},
+    ]
+    return {"Result": {"ResultParameters": {"ResultParameter": params if params is not None else base_params}}}
+
+
+def test_parse_status_result_completed_maps_to_zero_with_originator_from_params():
+    parsed = parse_status_result(_status_result_payload(status="Completed"))
+    assert parsed["result_code"] == 0
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00001"
+    assert parsed["conversation_id"] == "AG_query_999"
+    assert parsed["transaction_id"] == "TGH7SK61SU"
+
+
+def test_parse_status_result_failed_maps_to_one():
+    parsed = parse_status_result(_status_result_payload(status="Failed"))
+    assert parsed["result_code"] == 1
+
+
+def test_parse_status_result_unknown_status_is_none():
+    parsed = parse_status_result(_status_result_payload(status="Initiated"))
+    assert parsed["result_code"] is None
+
+
+def test_parse_status_result_originator_falls_back_to_occasion():
+    # No OriginatorConversationID/OriginalConversationID in params — only Occasion.
+    params = [
+        {"Key": "TransactionStatus", "Value": "Completed"},
+        {"Key": "Occasion", "Value": "MPPR-2026-00042"},
+    ]
+    parsed = parse_status_result(_status_result_payload(params=params))
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00042"
+
+
+def test_parse_status_result_originator_falls_back_to_result_level_occasion():
+    # Nothing at all in ResultParameters that identifies the request; only the
+    # top-level Result.Occasion (as Daraja echoes the query's own Occasion field).
+    payload = {"Result": {"Occasion": "MPPR-2026-00099", "ResultParameters": {"ResultParameter": [
+        {"Key": "TransactionStatus", "Value": "Completed"},
+    ]}}}
+    parsed = parse_status_result(payload)
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00099"
+
+
+# --- handle_status_result: routes a status-query result onto reconcile_payout ---
+
+def test_handle_status_result_completed_enqueues_reconcile_without_conversation_check(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Sending", "conversation_id": "AG_20260727_abc123"}
+
+    handle_status_result(_status_result_payload(status="Completed"))
+
+    assert len(payout_env.enqueued) == 1
+    job = payout_env.enqueued[0]
+    assert job["method"] == "swdpay.outbound.reconcile_payout"
+    assert job["job_id"] == "swdpay-payout-reconcile-MPPR-2026-00001-status"
+    assert job["deduplicate"] is True
+    assert job["enqueue_after_commit"] is True
+    assert job["request_name"] == "MPPR-2026-00001"
+    assert job["verify_conversation"] is False
+    assert job["parsed"]["result_code"] == 0
+
+
+def test_handle_status_result_inconclusive_logs_and_enqueues_nothing(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Sending"}
+
+    handle_status_result(_status_result_payload(status="Pending"))
+
+    assert payout_env.enqueued == []
+    assert len(payout_env.logged_errors) == 1
+    assert "inconclusive" in payout_env.logged_errors[0]["title"]
+
+
+def test_handle_status_result_unknown_originator_logs_and_enqueues_nothing(payout_env):
+    handle_status_result(_status_result_payload(status="Completed"))  # MPPR-2026-00001 never seeded
+
+    assert payout_env.enqueued == []
+    assert len(payout_env.logged_errors) == 1
+    assert "unknown request" in payout_env.logged_errors[0]["title"]

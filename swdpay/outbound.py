@@ -402,3 +402,108 @@ def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=Tr
             # Money moved; accounting failed. Keep Paid, surface the error for ops.
             doc.db_set("error_message", "Paid, but Payment Entry creation failed — see Error Log")
             frappe.log_error(title=f"swdpay payout PE failed: {request_name}")
+
+
+STUCK_AFTER_MINUTES = 5
+
+
+def resolve_stuck_payouts():
+    from frappe.utils import add_to_date, now_datetime
+    from swdpay.daraja import daraja_post, encrypt_security_credential
+
+    settings = frappe.get_single("M-Pesa Settings")
+    if not settings.enable_outbound_payments:
+        return
+
+    cutoff = add_to_date(now_datetime(), minutes=-STUCK_AFTER_MINUTES)
+    stuck = frappe.get_all(
+        "M-Pesa Payment Request",
+        filters={"status": "Sending", "modified": ["<", cutoff]},
+        pluck="name",
+    )
+    if not stuck:
+        return
+
+    credential = encrypt_security_credential(
+        settings.get_password("initiator_password"), settings.security_certificate
+    )
+    callback_base = (settings.callback_base_url or "").rstrip("/")
+    token = settings.get_password("callback_secret")
+    for name in stuck:
+        try:
+            daraja_post(settings, "/mpesa/transactionstatus/v1/query", {
+                "Initiator": settings.initiator_name,
+                "SecurityCredential": credential,
+                "CommandID": "TransactionStatusQuery",
+                "TransactionID": "",
+                "OriginalConversationID": name,
+                "PartyA": settings.paybill_number,
+                "IdentifierType": "4",
+                # NOTE: deliberately NOT payout_result — a status query's top-level
+                # ConversationID/OriginatorConversationID belong to the QUERY, not the
+                # original payment, so handle_payout_callback would drop it as an
+                # unknown originator (or reject it on the ConversationID check).
+                # status_result carries its own tolerant parser (parse_status_result)
+                # that reads OriginalConversationID/Occasion instead.
+                "ResultURL": _callback_url(callback_base, token, "status_result"),
+                "QueueTimeOutURL": _callback_url(callback_base, token, "status_result"),
+                "Remarks": "Stuck payout status check",
+                "Occasion": name,
+            })
+        except Exception:
+            frappe.log_error(title=f"swdpay watchdog query failed: {name}")
+
+
+def parse_status_result(payload):
+    """Map a Daraja Transaction Status result onto the payout-result shape.
+
+    Key names vary across Daraja products; parse tolerantly and prefer a no-op
+    (doc stays Sending, watchdog retries next cron) over a wrong resolution.
+    """
+    result = (payload or {}).get("Result") or {}
+    params = {}
+    for row in ((result.get("ResultParameters") or {}).get("ResultParameter") or []):
+        if isinstance(row, dict) and row.get("Key"):
+            params[row["Key"]] = row.get("Value")
+
+    originator = (
+        params.get("OriginatorConversationID")
+        or params.get("OriginalConversationID")
+        or params.get("Occasion")
+        or result.get("Occasion")
+    )
+    status_text = str(params.get("TransactionStatus") or "").strip().lower()
+    receipt = params.get("ReceiptNo") or params.get("TransactionReceipt")
+    if status_text in ("completed", "complete", "success", "successful"):
+        outcome_code = 0
+    elif status_text in ("failed", "cancelled", "canceled", "declined", "expired"):
+        outcome_code = 1
+    else:
+        outcome_code = None  # unknown → no-op
+
+    return {
+        "originator_conversation_id": originator,
+        "conversation_id": params.get("ConversationID"),
+        "result_code": outcome_code,
+        "result_desc": params.get("ResultDesc") or result.get("ResultDesc"),
+        "transaction_id": receipt,
+        "receiver_public_name": params.get("CreditPartyPublicName") or params.get("ReceiverPartyPublicName"),
+    }
+
+
+def handle_status_result(payload):
+    import json
+
+    parsed = parse_status_result(payload)
+    name = parsed.get("originator_conversation_id")
+    if not name or not frappe.db.exists("M-Pesa Payment Request", name):
+        frappe.log_error(title="swdpay status result for unknown request", message=json.dumps(payload, default=str))
+        return
+    if parsed.get("result_code") is None:
+        frappe.log_error(title=f"swdpay status result inconclusive: {name}", message=json.dumps(payload, default=str))
+        return
+    frappe.enqueue(
+        "swdpay.outbound.reconcile_payout", queue="short",
+        job_id=f"swdpay-payout-reconcile-{name}-status", deduplicate=True, enqueue_after_commit=True,
+        request_name=name, parsed=parsed, verify_conversation=False,
+    )
