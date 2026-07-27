@@ -14,4 +14,4 @@ class MPesaPaymentRequest(Document):
         frappe.db.set_value(self.doctype, self.name, "originator_conversation_id", self.name, update_modified=False)
 
     def validate(self):
-        validate_payment_request(self)
+        validate_payment_request(self, max_amount=frappe.db.get_single_value("M-Pesa Settings", "max_request_amount"))

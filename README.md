@@ -346,7 +346,7 @@ All outbound fields live in the `Outbound Payments (B2B / B2C)` section of `M-Pe
 - `Initiator Password` — the API operator's password (used to build the encrypted `SecurityCredential`).
 - `Daraja Security Certificate (PEM)` — Safaricom's public certificate (sandbox `SandboxCertificate.cer` or the production cert) used to RSA-encrypt the initiator password. Encryption only needs a syntactically valid PEM; it does not need to chain to a trusted root for the app's own encryption step to work.
 - `B2C Shortcode (defaults to Paybill)` — the shortcode used as `PartyA` for phone payouts; falls back to `Paybill Number` when blank.
-- `Max Request Amount` — hard cap enforced on every request and on approval.
+- `Max Request Amount` — hard cap enforced at doc validation (every save), at approval (`approve_and_send`), and re-checked at dispatch (`send_payment_request`, the last line of defence against a cap change or stale approval landing between approve and send).
 - `Outbound Paid From Account` — must be a `Bank` or `Cash` Account; this is where payout money is drawn from in the resulting Payment Entry.
 - `Outbound Mode of Payment`.
 - `Callback Base URL (public site URL)` — the externally-reachable base URL Daraja uses to reach this site; see Callback URLs below.

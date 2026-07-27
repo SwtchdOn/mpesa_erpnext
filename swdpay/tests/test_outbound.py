@@ -12,6 +12,7 @@ from swdpay.outbound import (
     parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
     payout_outcome, handle_payout_callback, reconcile_payout,
     parse_status_result, handle_status_result, plan_receipt_attach,
+    approve_and_send, reject_request, send_payment_request,
 )
 
 
@@ -434,3 +435,115 @@ def test_receipt_attach_only_for_paid_requests_by_requester():
     assert plan_receipt_attach("Paid", "tech@x.com", "tech@x.com") is None
     assert "Paid" in plan_receipt_attach("Sending", "tech@x.com", "tech@x.com")
     assert "own" in plan_receipt_attach("Paid", "tech@x.com", "other@x.com")
+
+
+# --- reject_request / approve_and_send: must decide off a row-locked status read,
+# not a possibly-stale in-memory doc.status (final-review Finding #1) ---
+
+def test_reject_request_raises_when_locked_status_is_sending(payout_env, monkeypatch):
+    # doc.status is cached as "Requested" (Requested -> Rejected is allowed) but a
+    # concurrent worker moves the row to "Sending" between get_doc and the locked
+    # read — assert_transition must see "Sending" (not allowed -> Rejected), not
+    # the stale "Requested" the pre-fix code would have used.
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Requested"}
+    monkeypatch.setattr(frappe_stub, "get_roles", lambda: ["M-Pesa Payment Approver"])
+
+    original_get_doc = frappe_stub.get_doc
+
+    def racy_get_doc(doctype, name=None):
+        doc = original_get_doc(doctype, name)
+        payout_env.db.docs[name]["status"] = "Sending"  # the race
+        return doc
+
+    monkeypatch.setattr(frappe_stub, "get_doc", racy_get_doc)
+
+    with pytest.raises(Exception, match="Cannot move"):
+        reject_request("MPPR-2026-00001", "wrong request")
+
+
+def test_approve_and_send_raises_when_locked_status_is_paid(payout_env, monkeypatch):
+    # doc.status is cached as "Requested" (Requested -> Approved is allowed) but a
+    # concurrent worker has already moved the row all the way to "Paid" — plan_approval
+    # must see the locked "Paid" (terminal), not the stale "Requested".
+    payout_env.db.docs["MPPR-2026-00001"] = {
+        "status": "Requested", "amount": 1500, "payee_name": "Kamau Electricals",
+        "recipient_type": "Buy Goods Till", "till_number": "832909",
+    }
+    monkeypatch.setattr(frappe_stub, "get_roles", lambda: ["M-Pesa Payment Approver"])
+    monkeypatch.setattr(
+        frappe_stub, "get_single",
+        lambda doctype: types.SimpleNamespace(enable_outbound_payments=True, max_request_amount=None),
+    )
+
+    original_get_doc = frappe_stub.get_doc
+
+    def racy_get_doc(doctype, name=None):
+        doc = original_get_doc(doctype, name)
+        payout_env.db.docs[name]["status"] = "Paid"  # the race
+        return doc
+
+    monkeypatch.setattr(frappe_stub, "get_doc", racy_get_doc)
+
+    with pytest.raises(Exception, match="Cannot move"):
+        approve_and_send("MPPR-2026-00001")
+
+    # And it must not have progressed the doc to Approved before raising.
+    assert payout_env.db.docs["MPPR-2026-00001"]["status"] == "Paid"
+
+
+# --- send_payment_request: Daraja's synchronous ResponseCode gate (Finding #2) ---
+
+def _sending_settings(**overrides):
+    base = dict(
+        enable_outbound_payments=True, max_request_amount=None,
+        initiator_name="apiop", security_certificate="PEM-CERT",
+        paybill_number="4165101", b2c_shortcode=None,
+        callback_base_url="https://erp.example.com",
+    )
+    base.update(overrides)
+    settings = types.SimpleNamespace(**base)
+    settings.get_password = lambda field: {"initiator_password": "s3cret", "callback_secret": "S3CRET"}[field]
+    return settings
+
+
+def _approved_till_doc():
+    return {
+        "status": "Approved", "amount": 1500, "payee_name": "Kamau Electricals",
+        "recipient_type": "Buy Goods Till", "till_number": "832909",
+        "paybill_number": None, "account_reference": None, "phone_number": None,
+        "description": "Cable and breakers",
+    }
+
+
+def test_send_payment_request_nonzero_response_code_marks_failed(payout_env, monkeypatch):
+    payout_env.db.docs["MPPR-2026-00001"] = _approved_till_doc()
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: _sending_settings())
+    monkeypatch.setattr("swdpay.daraja.encrypt_security_credential", lambda password, cert: "ENCRYPTED")
+    monkeypatch.setattr(
+        "swdpay.daraja.daraja_post",
+        lambda settings, path, body: {"ResponseCode": "1", "ResponseDescription": "Initiator invalid"},
+    )
+
+    send_payment_request("MPPR-2026-00001")
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Failed"
+    assert "ResponseCode 1" in doc["error_message"]
+    assert "Initiator invalid" in doc["error_message"]
+    assert "conversation_id" not in doc
+
+
+def test_send_payment_request_zero_response_code_stores_conversation_id(payout_env, monkeypatch):
+    payout_env.db.docs["MPPR-2026-00001"] = _approved_till_doc()
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: _sending_settings())
+    monkeypatch.setattr("swdpay.daraja.encrypt_security_credential", lambda password, cert: "ENCRYPTED")
+    monkeypatch.setattr(
+        "swdpay.daraja.daraja_post",
+        lambda settings, path, body: {"ResponseCode": "0", "ConversationID": "AG_20260727_abc123"},
+    )
+
+    send_payment_request("MPPR-2026-00001")
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Sending"
+    assert doc["conversation_id"] == "AG_20260727_abc123"

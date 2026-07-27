@@ -133,8 +133,10 @@ def plan_approval(status, *, enabled, has_role):
 def approve_and_send(name):
     settings = frappe.get_single("M-Pesa Settings")
     doc = frappe.get_doc("M-Pesa Payment Request", name)
+    # Row-lock the claim: don't decide off a possibly-stale in-memory doc.status.
+    locked_status = frappe.db.get_value("M-Pesa Payment Request", name, "status", for_update=True)
     error = plan_approval(
-        doc.status,
+        locked_status,
         enabled=bool(settings.enable_outbound_payments),
         has_role="M-Pesa Payment Approver" in frappe.get_roles(),
     )
@@ -161,7 +163,9 @@ def reject_request(name, reason):
     if not (reason or "").strip():
         frappe.throw("A rejection reason is required")
     doc = frappe.get_doc("M-Pesa Payment Request", name)
-    assert_transition(doc.status, "Rejected")
+    # Row-lock the claim: don't decide off a possibly-stale in-memory doc.status.
+    locked_status = frappe.db.get_value("M-Pesa Payment Request", name, "status", for_update=True)
+    assert_transition(locked_status, "Rejected")
     doc.db_set({"status": "Rejected", "rejection_reason": reason.strip()})
 
 
@@ -176,6 +180,9 @@ def send_payment_request(request_name):
 
     settings = frappe.get_single("M-Pesa Settings")
     try:
+        # Re-check the amount cap at dispatch time too: settings (or the request,
+        # via some other path) may have changed between approval and now.
+        validate_payment_request(doc, max_amount=settings.max_request_amount)
         credential = encrypt_security_credential(
             settings.get_password("initiator_password"), settings.security_certificate
         )
@@ -189,7 +196,7 @@ def send_payment_request(request_name):
             callback_token=settings.get_password("callback_secret"),
         )
     except Exception:
-        # Pre-dispatch failure: nothing sent, safe to mark Failed for re-approval.
+        # Pre-dispatch failure: nothing sent, safe to mark Failed — nothing was dispatched.
         doc.db_set({"status": "Failed", "error_message": "Could not prepare the payment request"})
         frappe.log_error(title=f"swdpay payout prepare failed: {request_name}")
         frappe.db.commit()
@@ -204,6 +211,16 @@ def send_payment_request(request_name):
         # Sending — the Task 12 watchdog resolves it via Transaction Status.
         frappe.log_error(title=f"swdpay payout dispatch error: {request_name}")
         raise
+
+    # A gate rejection here is unambiguous — Daraja never dispatched anything
+    # downstream, so Failed is safe (unlike a transport-level exception above).
+    response_code = str(response.get("ResponseCode", "0")).strip()
+    if response_code != "0":
+        doc.db_set({
+            "status": "Failed",
+            "error_message": f"Daraja rejected the request (ResponseCode {response_code}): {response.get('ResponseDescription') or ''}".strip(),
+        })
+        return
     doc.db_set("conversation_id", response.get("ConversationID"))
 
 
@@ -389,6 +406,7 @@ def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=Tr
             "mpesa_transaction_id": parsed.get("transaction_id"),
             "receiver_public_name": parsed.get("receiver_public_name"),
             "receipt_pending": 1,
+            "error_message": None,  # clear a stale "queue timeout" annotation
         })
     else:
         updates["error_message"] = parsed.get("result_desc") or "Payment failed"
@@ -405,6 +423,8 @@ def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=Tr
 
 
 STUCK_AFTER_MINUTES = 5
+STUCK_AGE_CAP_HOURS = 24
+STUCK_AGE_CAP_MESSAGE = "Unresolved after 24h — manual review required"
 
 
 def resolve_stuck_payouts():
@@ -416,12 +436,46 @@ def resolve_stuck_payouts():
         return
 
     cutoff = add_to_date(now_datetime(), minutes=-STUCK_AFTER_MINUTES)
+
+    # Rescue: an Approved doc past the same cutoff means its send_payment_request
+    # RQ job was lost (worker crash, queue drop, etc.) before it ever reached
+    # Sending. Re-enqueuing is safe — send's own locked-status claim (only
+    # Approved -> Sending) makes a duplicate/late job an idempotent no-op.
+    stuck_approved = frappe.get_all(
+        "M-Pesa Payment Request",
+        filters={"status": "Approved", "modified": ["<", cutoff]},
+        pluck="name",
+    )
+    for name in stuck_approved:
+        frappe.enqueue(
+            "swdpay.outbound.send_payment_request",
+            queue="short",
+            job_id=f"swdpay-payout-{name}",  # dedup: matches approve_and_send's job_id
+            deduplicate=True,
+            enqueue_after_commit=True,
+            request_name=name,
+        )
+
     stuck = frappe.get_all(
         "M-Pesa Payment Request",
         filters={"status": "Sending", "modified": ["<", cutoff]},
-        pluck="name",
+        fields=["name", "modified", "error_message"],
     )
     if not stuck:
+        return
+
+    # Age cap: past 24h a Sending doc is treated as needing manual review instead
+    # of being queried forever — flag it once (idempotent) and stop asking Daraja.
+    age_cap_cutoff = add_to_date(now_datetime(), hours=-STUCK_AGE_CAP_HOURS)
+    queryable = []
+    for row in stuck:
+        if row["modified"] < age_cap_cutoff:
+            if row.get("error_message") != STUCK_AGE_CAP_MESSAGE:
+                frappe.db.set_value("M-Pesa Payment Request", row["name"], "error_message", STUCK_AGE_CAP_MESSAGE)
+            continue
+        queryable.append(row["name"])
+
+    if not queryable:
         return
 
     credential = encrypt_security_credential(
@@ -429,7 +483,7 @@ def resolve_stuck_payouts():
     )
     callback_base = (settings.callback_base_url or "").rstrip("/")
     token = settings.get_password("callback_secret")
-    for name in stuck:
+    for name in queryable:
         try:
             daraja_post(settings, "/mpesa/transactionstatus/v1/query", {
                 "Initiator": settings.initiator_name,
@@ -507,6 +561,8 @@ def handle_status_result(payload):
     if not name or not frappe.db.exists("M-Pesa Payment Request", name):
         frappe.log_error(title="swdpay status result for unknown request", message=json.dumps(payload, default=str))
         return
+    # Raw-first, mirroring handle_payout_callback: persist before any downstream action.
+    frappe.db.set_value("M-Pesa Payment Request", name, "raw_result", json.dumps(payload, default=str))
     if parsed.get("result_code") is None:
         frappe.log_error(title=f"swdpay status result inconclusive: {name}", message=json.dumps(payload, default=str))
         return

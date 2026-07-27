@@ -103,6 +103,11 @@ def _fake_log_error(title=None, message=None):
     frappe_stub.logged_errors.append({"title": title, "message": message})
 
 
+def _fake_get_roles():
+    # Fail-closed default; approve/reject permission tests monkeypatch this per-test.
+    return []
+
+
 frappe_stub.db = FakeDB({})
 frappe_stub.enqueued = []
 frappe_stub.logged_errors = []
@@ -110,6 +115,7 @@ frappe_stub.get_doc = _fake_get_doc
 frappe_stub.get_single = _fake_get_single
 frappe_stub.enqueue = _fake_enqueue
 frappe_stub.log_error = _fake_log_error
+frappe_stub.get_roles = _fake_get_roles
 
 
 @pytest.fixture
