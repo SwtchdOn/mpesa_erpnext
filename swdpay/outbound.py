@@ -147,6 +147,8 @@ def approve_and_send(name):
         "swdpay.outbound.send_payment_request",
         queue="short",
         job_id=f"swdpay-payout-{name}",  # dedup: a double-tap enqueues once
+        deduplicate=True,  # job_id alone does not dedupe in frappe; this makes the RQ id enforce it
+        enqueue_after_commit=True,  # don't let the worker start before the "Approved" commit lands
         request_name=name,
     )
     return {"status": "Approved"}
@@ -167,7 +169,9 @@ def send_payment_request(request_name):
     from swdpay.daraja import daraja_post, encrypt_security_credential
 
     doc = frappe.get_doc("M-Pesa Payment Request", request_name)
-    if doc.status != "Approved":
+    # Row-lock the claim: a concurrent worker blocks here, then sees "Sending" and bails.
+    locked_status = frappe.db.get_value("M-Pesa Payment Request", request_name, "status", for_update=True)
+    if locked_status != "Approved":
         return  # idempotent: stale/duplicate job
 
     settings = frappe.get_single("M-Pesa Settings")

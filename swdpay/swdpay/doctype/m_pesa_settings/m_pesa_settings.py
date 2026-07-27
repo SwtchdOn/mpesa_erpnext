@@ -39,6 +39,7 @@ class MPesaSettings(Document):
                     ("Outbound Paid From Account", self.outbound_paid_from_account),
                     ("Outbound Mode of Payment", self.outbound_mode_of_payment),
                     ("Callback Base URL", self.callback_base_url),
+                    ("Max Request Amount", self.max_request_amount),
                 ] if not value
             ]
             if missing:
