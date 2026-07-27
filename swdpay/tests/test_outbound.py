@@ -191,3 +191,38 @@ def test_plan_approval_guards():
     assert "disabled" in plan_approval("Requested", enabled=False, has_role=True)
     assert "permission" in plan_approval("Requested", enabled=True, has_role=False)
     assert "Cannot move" in plan_approval("Paid", enabled=True, has_role=True)
+
+
+from swdpay.outbound import plan_party_resolution
+
+
+def test_till_resolves_to_existing_supplier_by_identifier():
+    plan = plan_party_resolution(_request(), supplier_by_identifier="Kamau Electricals Ltd",
+                                 employee_matches=[], supplier_matches=[])
+    assert plan == {"party_type": "Supplier", "party": "Kamau Electricals Ltd", "create_supplier": False}
+
+
+def test_till_with_no_match_creates_supplier_from_payee_name():
+    plan = plan_party_resolution(_request(), supplier_by_identifier=None,
+                                 employee_matches=[], supplier_matches=[])
+    assert plan == {"party_type": "Supplier", "party": "Kamau Electricals", "create_supplier": True}
+
+
+def test_phone_prefers_exactly_one_employee():
+    req = _request(recipient_type="Phone", till_number=None, phone_number="254712345678")
+    plan = plan_party_resolution(req, supplier_by_identifier=None,
+                                 employee_matches=["HR-EMP-00003"], supplier_matches=["Some Shop"])
+    assert plan == {"party_type": "Employee", "party": "HR-EMP-00003", "create_supplier": False}
+
+
+def test_phone_with_multiple_employee_matches_falls_through_to_supplier():
+    req = _request(recipient_type="Phone", till_number=None, phone_number="254712345678")
+    plan = plan_party_resolution(req, supplier_by_identifier=None,
+                                 employee_matches=["A", "B"], supplier_matches=["Some Shop"])
+    assert plan == {"party_type": "Supplier", "party": "Some Shop", "create_supplier": False}
+
+
+def test_phone_with_no_matches_creates_supplier():
+    req = _request(recipient_type="Phone", till_number=None, phone_number="254712345678")
+    plan = plan_party_resolution(req, supplier_by_identifier=None, employee_matches=[], supplier_matches=[])
+    assert plan == {"party_type": "Supplier", "party": "Kamau Electricals", "create_supplier": True}

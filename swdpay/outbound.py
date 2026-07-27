@@ -205,3 +205,62 @@ def send_payment_request(request_name):
         frappe.log_error(title=f"swdpay payout dispatch error: {request_name}")
         raise
     doc.db_set("conversation_id", response.get("ConversationID"))
+
+
+def recipient_identifier(request):
+    if request.recipient_type == "Buy Goods Till":
+        return request.till_number
+    if request.recipient_type == "Paybill":
+        return request.paybill_number
+    return request.phone_number
+
+
+def plan_party_resolution(request, *, supplier_by_identifier, employee_matches, supplier_matches):
+    if supplier_by_identifier:
+        return {"party_type": "Supplier", "party": supplier_by_identifier, "create_supplier": False}
+    if request.recipient_type == "Phone" and len(employee_matches) == 1:
+        return {"party_type": "Employee", "party": employee_matches[0], "create_supplier": False}
+    if len(supplier_matches) == 1:
+        return {"party_type": "Supplier", "party": supplier_matches[0], "create_supplier": False}
+    return {"party_type": "Supplier", "party": request.payee_name, "create_supplier": True}
+
+
+def resolve_or_create_party(doc):
+    """Resolve doc → (party_type, party). Manual party set by ops wins outright."""
+    from swdpay.reconciliation import get_phone_variants
+
+    if doc.party_type and doc.party:
+        return doc.party_type, doc.party
+
+    identifier = recipient_identifier(doc)
+    supplier_by_identifier = frappe.db.get_value("Supplier", {"mpesa_identifier": identifier}, "name")
+
+    employee_matches, supplier_matches = [], []
+    if doc.recipient_type == "Phone":
+        variants = get_phone_variants(doc.phone_number)
+        employee_matches = [
+            e.name for e in frappe.get_all("Employee", filters={"cell_number": ["in", variants], "status": "Active"})
+        ]
+        supplier_matches = [s.name for s in frappe.get_all("Supplier", filters={"mobile_no": ["in", variants]})]
+
+    plan = plan_party_resolution(
+        doc, supplier_by_identifier=supplier_by_identifier,
+        employee_matches=employee_matches, supplier_matches=supplier_matches,
+    )
+
+    if plan["create_supplier"]:
+        if frappe.db.exists("Supplier", plan["party"]):
+            supplier_name = plan["party"]
+        else:
+            supplier = frappe.get_doc({
+                "doctype": "Supplier", "supplier_name": plan["party"],
+                "supplier_group": frappe.db.get_single_value("Buying Settings", "supplier_group") or "All Supplier Groups",
+                "mpesa_identifier": identifier,
+            }).insert(ignore_permissions=True)
+            supplier_name = supplier.name
+        frappe.db.set_value("Supplier", supplier_name, "mpesa_identifier", identifier)
+        return "Supplier", supplier_name
+
+    if plan["party_type"] == "Supplier":
+        frappe.db.set_value("Supplier", plan["party"], "mpesa_identifier", identifier)
+    return plan["party_type"], plan["party"]
