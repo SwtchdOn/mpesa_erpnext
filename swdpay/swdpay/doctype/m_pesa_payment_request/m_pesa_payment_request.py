@@ -8,7 +8,7 @@ class MPesaPaymentRequest(Document):
     def before_insert(self):
         self.requested_by = frappe.session.user
         self.status = "Requested"
-        self.originator_conversation_id = None  # set to doc name after autoname
+        self.originator_conversation_id = None  # after_insert copies the generated name here
 
     def after_insert(self):
         frappe.db.set_value(self.doctype, self.name, "originator_conversation_id", self.name, update_modified=False)
