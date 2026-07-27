@@ -117,3 +117,87 @@ def parse_etims_invoice_number(url):
         return None
     values = query.get("invoiceNo") or query.get("invoiceno") or []
     return values[0] if values else None
+
+
+def plan_approval(status, *, enabled, has_role):
+    if not enabled:
+        return "Outbound payments are disabled in M-Pesa Settings"
+    if not has_role:
+        return "You do not have permission to approve payment requests"
+    if "Approved" not in ALLOWED_TRANSITIONS.get(status, set()):
+        return f"Cannot move payment request from {status} to Approved"
+    return None
+
+
+@frappe.whitelist()
+def approve_and_send(name):
+    settings = frappe.get_single("M-Pesa Settings")
+    doc = frappe.get_doc("M-Pesa Payment Request", name)
+    error = plan_approval(
+        doc.status,
+        enabled=bool(settings.enable_outbound_payments),
+        has_role="M-Pesa Payment Approver" in frappe.get_roles(),
+    )
+    if error:
+        frappe.throw(error)
+    validate_payment_request(doc, max_amount=settings.max_request_amount)
+
+    doc.db_set("status", "Approved")
+    frappe.enqueue(
+        "swdpay.outbound.send_payment_request",
+        queue="short",
+        job_id=f"swdpay-payout-{name}",  # dedup: a double-tap enqueues once
+        request_name=name,
+    )
+    return {"status": "Approved"}
+
+
+@frappe.whitelist()
+def reject_request(name, reason):
+    if "M-Pesa Payment Approver" not in frappe.get_roles():
+        frappe.throw("You do not have permission to reject payment requests")
+    if not (reason or "").strip():
+        frappe.throw("A rejection reason is required")
+    doc = frappe.get_doc("M-Pesa Payment Request", name)
+    assert_transition(doc.status, "Rejected")
+    doc.db_set({"status": "Rejected", "rejection_reason": reason.strip()})
+
+
+def send_payment_request(request_name):
+    from swdpay.daraja import daraja_post, encrypt_security_credential
+
+    doc = frappe.get_doc("M-Pesa Payment Request", request_name)
+    if doc.status != "Approved":
+        return  # idempotent: stale/duplicate job
+
+    settings = frappe.get_single("M-Pesa Settings")
+    try:
+        credential = encrypt_security_credential(
+            settings.get_password("initiator_password"), settings.security_certificate
+        )
+        payout = build_payout_request(
+            doc,
+            initiator_name=settings.initiator_name,
+            security_credential=credential,
+            shortcode=settings.paybill_number,
+            b2c_shortcode=settings.b2c_shortcode or settings.paybill_number,
+            callback_base=(settings.callback_base_url or "").rstrip("/"),
+            callback_token=settings.get_password("callback_secret"),
+        )
+    except Exception:
+        # Pre-dispatch failure: nothing sent, safe to mark Failed for re-approval.
+        doc.db_set({"status": "Failed", "error_message": "Could not prepare the payment request"})
+        frappe.log_error(title=f"swdpay payout prepare failed: {request_name}")
+        frappe.db.commit()
+        raise
+
+    doc.db_set("status", "Sending")
+    frappe.db.commit()  # persist Sending BEFORE dispatch: after this point only callbacks/watchdog resolve
+    try:
+        response = daraja_post(settings, payout["path"], payout["body"])
+    except Exception:
+        # Ambiguous: the request may or may not have reached Safaricom. Leave in
+        # Sending — the Task 12 watchdog resolves it via Transaction Status.
+        frappe.log_error(title=f"swdpay payout dispatch error: {request_name}")
+        raise
+    doc.db_set("conversation_id", response.get("ConversationID"))

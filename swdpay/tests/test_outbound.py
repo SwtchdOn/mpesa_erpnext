@@ -7,7 +7,7 @@ StubValidationError = frappe_stub.StubValidationError
 
 import pytest
 
-from swdpay.outbound import ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request, parse_payout_result, parse_etims_invoice_number
+from swdpay.outbound import ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request, parse_payout_result, parse_etims_invoice_number, plan_approval
 
 
 def _request(**overrides):
@@ -184,3 +184,10 @@ def test_encrypt_security_credential_round_trips_with_test_key():
     encrypted = encrypt_security_credential("s3cret-pass", pem)
     decrypted = key.decrypt(b64decode(encrypted), padding.PKCS1v15())
     assert decrypted == b"s3cret-pass"
+
+
+def test_plan_approval_guards():
+    assert plan_approval("Requested", enabled=True, has_role=True) is None  # OK → no error
+    assert "disabled" in plan_approval("Requested", enabled=False, has_role=True)
+    assert "permission" in plan_approval("Requested", enabled=True, has_role=False)
+    assert "Cannot move" in plan_approval("Paid", enabled=True, has_role=True)

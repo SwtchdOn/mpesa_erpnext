@@ -26,5 +26,6 @@ frappe_utils_stub.now_datetime = lambda: "2026-05-24 00:00:00"
 frappe_stub.utils = frappe_utils_stub
 frappe_stub.throw = _stub_throw
 frappe_stub.StubValidationError = StubValidationError
+frappe_stub.whitelist = lambda *a, **k: (lambda f: f)
 sys.modules["frappe"] = frappe_stub
 sys.modules["frappe.utils"] = frappe_utils_stub
