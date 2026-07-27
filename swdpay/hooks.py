@@ -19,6 +19,10 @@ jinja = {
 fixtures = [
     {
         "dt": "Role",
-        "filters": [["role_name", "=", "M-Pesa Reconciliation Manager"]],
+        "filters": [["role_name", "in", ["M-Pesa Reconciliation Manager", "M-Pesa Payment Requester", "M-Pesa Payment Approver"]]],
+    },
+    {
+        "dt": "Custom Field",
+        "filters": [["dt", "=", "Supplier"], ["fieldname", "=", "mpesa_identifier"]],
     },
 ]
