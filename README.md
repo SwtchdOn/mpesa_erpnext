@@ -334,6 +334,59 @@ For customer phone matches:
 
 If Payment Entry submission fails after the draft Payment Entry is inserted, the transaction keeps the draft Payment Entry link so a retry can submit the existing document instead of creating another draft.
 
+## Outbound Payments (B2B/B2C)
+
+In addition to receiving Paybill payments, SwdPay can **send** money out via Daraja's Business-to-Customer (B2C, phone payouts) and Business-to-Business (B2B, Buy Goods/Paybill payouts) products, driven by an in-app approval workflow on the `M-Pesa Payment Request` DocType.
+
+### Settings
+
+All outbound fields live in the `Outbound Payments (B2B / B2C)` section of `M-Pesa Settings`, gated by `Enable Outbound Payments` (off by default — see Production Prerequisites below). Once enabled, `validate()` fails closed and requires:
+
+- `Initiator Name` — the Daraja API operator username.
+- `Initiator Password` — the API operator's password (used to build the encrypted `SecurityCredential`).
+- `Daraja Security Certificate (PEM)` — Safaricom's public certificate (sandbox `SandboxCertificate.cer` or the production cert) used to RSA-encrypt the initiator password. Encryption only needs a syntactically valid PEM; it does not need to chain to a trusted root for the app's own encryption step to work.
+- `B2C Shortcode (defaults to Paybill)` — the shortcode used as `PartyA` for phone payouts; falls back to `Paybill Number` when blank.
+- `Max Request Amount` — hard cap enforced on every request and on approval.
+- `Outbound Paid From Account` — must be a `Bank` or `Cash` Account; this is where payout money is drawn from in the resulting Payment Entry.
+- `Outbound Mode of Payment`.
+- `Callback Base URL (public site URL)` — the externally-reachable base URL Daraja uses to reach this site; see Callback URLs below.
+
+### Callback URLs (per-request, not registered)
+
+Unlike the C2B Confirmation/Validation URLs (registered once against the Paybill via `bench execute` / the Daraja portal), the outbound callback URLs are **built per-request** by `build_payout_request` and sent as `ResultURL` / `QueueTimeOutURL` fields in each individual B2C/B2B API call:
+
+- `swdpay.api.callbacks.payout_result` — Daraja's terminal result (success or failure) for a payout.
+- `swdpay.api.callbacks.payout_timeout` — Daraja's queue-timeout notification; leaves the request in `Sending` for the watchdog to resolve.
+- `swdpay.api.callbacks.status_result` — the result of a `TransactionStatusQuery`, used only by the stuck-payout watchdog (`resolve_stuck_payouts`, scheduled every 5 minutes).
+
+There is nothing to paste into the Daraja portal for these — they are generated automatically from `Callback Base URL` + `Callback Secret / Token` on every dispatch.
+
+### Roles
+
+- `M-Pesa Payment Requester` — can create payment requests for themselves (`if_owner` read).
+- `M-Pesa Payment Approver` — sees the **Approve & Pay** / **Reject** buttons on a `Requested` request, and can call `approve_and_send` / `reject_request`.
+- `System Manager` — full access, same as other SwdPay DocTypes.
+
+### Approval Flow
+
+1. A Requester creates an `M-Pesa Payment Request` (Buy Goods Till, Paybill, or Phone) — status `Requested`.
+2. An Approver clicks **Approve & Pay** on the form (`swdpay/public/js/m_pesa_payment_request.js`). This calls `swdpay.outbound.approve_and_send`, which re-validates the request, moves it to `Approved`, and enqueues `send_payment_request` (deduplicated by `job_id`, after commit).
+3. The background job row-locks the request, builds the Daraja B2C/B2B payload, encrypts the security credential, moves the request to `Sending`, and POSTs to Daraja.
+4. Daraja's asynchronous result callback (`payout_result`) is handled raw-first: the payload is persisted on the request before reconciliation is queued. `reconcile_payout` row-locks the request, verifies the callback's `ConversationID` against the one stored at dispatch time, and on success moves the request to `Paid`, sets `receipt_pending = 1`, resolves/creates the Supplier or Employee party, and creates + submits a `Pay`-type Payment Entry (idempotent — a duplicate callback is a no-op once the request is out of `Sending`).
+5. Field staff attach a receipt via `swdpay.api.field.attach_receipt(name, file_url, etims_url=None)` — restricted to the requester, and only while the request is `Paid`. It parses an eTIMS invoice number out of a KRA-style URL query string and clears `receipt_pending`.
+6. An Approver can instead **Reject** a `Requested` request with a reason, moving it straight to `Rejected`.
+7. If a dispatch is ambiguous (network error, or Daraja never calls back) the request stays `Sending`; the `resolve_stuck_payouts` watchdog queries `TransactionStatusQuery` for anything stuck longer than 5 minutes and reconciles from that instead.
+
+### Production Prerequisites
+
+Keep `Enable Outbound Payments` **off** until all of the following are true:
+
+- The B2C and B2B products are provisioned on your Daraja production app (these are separate approvals from C2B/Paybill access).
+- A dedicated Initiator (API operator) user has been created against your shortcode, with its password known and the production security certificate obtained from Safaricom.
+- The utility/working account behind your shortcode is funded — B2C/B2B payouts draw from that Safaricom-side balance, not from `Outbound Paid From Account` (which is only the ERPNext-side ledger account debited by the resulting Payment Entry).
+- `Callback Base URL` is a publicly reachable HTTPS URL Daraja can call back on production.
+- `Max Request Amount` reflects your actual payout policy — it is the only cap enforced beyond Daraja's own limits.
+
 ## Development Notes
 
 This repository currently contains the custom app source only. Full integration testing requires an ERPNext/Frappe bench site with the app installed.

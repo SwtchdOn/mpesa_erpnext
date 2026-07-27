@@ -7,6 +7,7 @@ app_license = "MIT"
 
 doctype_js = {
     "M-Pesa Transaction": "public/js/m_pesa_transaction.js",
+    "M-Pesa Payment Request": "public/js/m_pesa_payment_request.js",
 }
 
 jinja = {

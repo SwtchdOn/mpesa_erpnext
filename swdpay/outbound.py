@@ -491,6 +491,14 @@ def parse_status_result(payload):
     }
 
 
+def plan_receipt_attach(status, requested_by, session_user):
+    if status != "Paid":
+        return "Receipts can only be attached to Paid requests"
+    if requested_by != session_user:
+        return "You can only attach receipts to your own requests"
+    return None
+
+
 def handle_status_result(payload):
     import json
 

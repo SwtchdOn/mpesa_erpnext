@@ -11,7 +11,7 @@ from swdpay.outbound import (
     ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request,
     parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
     payout_outcome, handle_payout_callback, reconcile_payout,
-    parse_status_result, handle_status_result,
+    parse_status_result, handle_status_result, plan_receipt_attach,
 )
 
 
@@ -426,3 +426,11 @@ def test_handle_status_result_unknown_originator_logs_and_enqueues_nothing(payou
     assert payout_env.enqueued == []
     assert len(payout_env.logged_errors) == 1
     assert "unknown request" in payout_env.logged_errors[0]["title"]
+
+
+# --- plan_receipt_attach: the attach_receipt guard (Paid-only, own-request-only) ---
+
+def test_receipt_attach_only_for_paid_requests_by_requester():
+    assert plan_receipt_attach("Paid", "tech@x.com", "tech@x.com") is None
+    assert "Paid" in plan_receipt_attach("Sending", "tech@x.com", "tech@x.com")
+    assert "own" in plan_receipt_attach("Paid", "tech@x.com", "other@x.com")
