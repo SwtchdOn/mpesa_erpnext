@@ -34,7 +34,13 @@ def encrypt_security_credential(password, certificate_pem):
 
 
 def get_daraja_token(settings):
-    cache_key = f"swdpay_daraja_token_{settings.environment}"
+    from hashlib import sha1
+
+    # Key the cache on the consumer key too: a credential change (or a deploy)
+    # must never reuse a token minted for a different Daraja app.
+    consumer_key = settings.get_password("consumer_key")
+    key_hash = sha1((consumer_key or "").encode()).hexdigest()[:8]
+    cache_key = f"swdpay_daraja_token_{settings.environment}_{key_hash}"
     cached = frappe.cache().get_value(cache_key)
     if cached:
         return cached
@@ -42,15 +48,27 @@ def get_daraja_token(settings):
     base = daraja_base_url(settings.environment)
     response = requests.get(
         f"{base}/oauth/v1/generate?grant_type=client_credentials",
-        auth=(settings.get_password("consumer_key"), settings.get_password("consumer_secret")),
+        auth=(consumer_key, settings.get_password("consumer_secret")),
         timeout=30,
     )
-    response.raise_for_status()
+    _raise_with_body(response)
     data = response.json()
     token = data["access_token"]
     ttl = max(int(float(data.get("expires_in", 3599))) - TOKEN_TTL_SLACK, TOKEN_TTL_SLACK)
     frappe.cache().set_value(cache_key, token, expires_in_sec=ttl)
     return token
+
+
+def _raise_with_body(response):
+    """raise_for_status, but keep Daraja's error body — it names the actual
+    problem (invalid token, product not provisioned, bad initiator), which a
+    bare HTTP status hides. Response bodies carry no secrets."""
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()[:500]
+        raise requests.HTTPError(
+            f"{response.status_code} error for {response.url}: {detail or 'no response body'}",
+            response=response,
+        )
 
 
 def daraja_post(settings, path, body):
@@ -60,5 +78,5 @@ def daraja_post(settings, path, body):
         f"{base}{path}", json=body,
         headers={"Authorization": f"Bearer {token}"}, timeout=30,
     )
-    response.raise_for_status()
+    _raise_with_body(response)
     return response.json()
