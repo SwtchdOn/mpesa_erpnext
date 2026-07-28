@@ -10,7 +10,7 @@ import pytest
 from swdpay.outbound import (
     ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request,
     parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
-    payout_outcome, handle_payout_callback, reconcile_payout,
+    payout_outcome, handle_payout_callback, reconcile_payout, find_request_by_originator,
     parse_status_result, handle_status_result, plan_receipt_attach,
     approve_and_send, reject_request, send_payment_request,
     parse_balance_result,
@@ -93,6 +93,9 @@ def test_till_payment_builds_business_buy_goods():
     assert b["SenderIdentifierType"] == "4" and b["RecieverIdentifierType"] == "4"
     assert b["Amount"] == 1500
     assert "AccountReference" not in b
+    # Daraja v1 B2B does not document OriginatorConversationID as a request field —
+    # it's minted by Daraja and captured from the response instead.
+    assert "OriginatorConversationID" not in b
     assert b["ResultURL"] == "https://erp.example.com/api/method/swdpay.api.callbacks.payout_result?token=S3CRET"
     assert b["QueueTimeOutURL"] == "https://erp.example.com/api/method/swdpay.api.callbacks.payout_timeout?token=S3CRET"
 
@@ -102,24 +105,21 @@ def test_paybill_payment_builds_business_paybill_with_account():
     b = build_payout_request(req, **_KW)["body"]
     assert b["CommandID"] == "BusinessPayBill"
     assert b["PartyB"] == "888880" and b["AccountReference"] == "INV-99"
+    assert "OriginatorConversationID" not in b
 
 
 def test_phone_payment_builds_b2c():
     req = _request(recipient_type="Phone", till_number=None, phone_number="254712345678")
     req.name = "MPPR-2026-00007"
     out = build_payout_request(req, **_KW)
-    assert out["path"] == "/mpesa/b2c/v3/paymentrequest"
+    assert out["path"] == "/mpesa/b2c/v1/paymentrequest"
     b = out["body"]
     assert b["CommandID"] == "BusinessPayment"
-    assert b["OriginatorConversationID"] == "MPPR-2026-00007"
+    # Daraja v1 B2C does not document OriginatorConversationID as a request field
+    # either — it's minted by Daraja and captured from the response instead.
+    assert "OriginatorConversationID" not in b
     assert b["InitiatorName"] == "apiop"
     assert b["PartyA"] == "4165101" and b["PartyB"] == "254712345678"
-
-
-def test_b2b_bodies_carry_originator_conversation_id():
-    req = _request()
-    req.name = "MPPR-2026-00008"
-    assert build_payout_request(req, **_KW)["body"]["OriginatorConversationID"] == "MPPR-2026-00008"
 
 
 def _result_payload(code=0, params=None):
@@ -309,6 +309,56 @@ def test_unknown_originator_logs_and_enqueues_nothing(payout_env):
     assert len(payout_env.logged_errors) == 1
     assert "unknown request" in payout_env.logged_errors[0]["title"]
     assert payout_env.logged_errors[0]["message"]  # payload captured, not lost
+
+
+# --- find_request_by_originator: v1's originator is Daraja-minted, so correlation
+# must fall through to the stored originator_conversation_id field ---
+
+def test_find_request_by_originator_resolves_doc_name_directly(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {"status": "Sending"}
+    assert find_request_by_originator("MPPR-2026-00001") == "MPPR-2026-00001"
+
+
+def test_find_request_by_originator_resolves_daraja_generated_id(payout_env):
+    payout_env.db.docs["MPPR-2026-00001"] = {
+        "status": "Sending", "originator_conversation_id": "AG_xyz_123",
+    }
+    assert find_request_by_originator("AG_xyz_123") == "MPPR-2026-00001"
+
+
+def test_find_request_by_originator_unknown_returns_none(payout_env):
+    assert find_request_by_originator("AG_never_seen") is None
+    assert find_request_by_originator(None) is None
+    assert find_request_by_originator("") is None
+
+
+def test_result_callback_resolves_via_stored_originator_conversation_id(payout_env, monkeypatch):
+    # Daraja v1: the callback's OriginatorConversationID is Daraja's own id (captured
+    # at dispatch), not the doc name — correlation must go through the stored field.
+    payout_env.db.docs["MPPR-2026-00001"] = {
+        "status": "Sending", "conversation_id": "AG_20260727_abc123",
+        "originator_conversation_id": "AG_xyz_123", "payment_entry": None,
+    }
+    pe_calls = []
+    monkeypatch.setattr(
+        "swdpay.outbound.create_payout_payment_entry",
+        lambda doc, settings: pe_calls.append(doc.name) or pe_calls.append("PE-0001"),
+    )
+
+    payload = _result_payload(code=0)
+    payload["Result"]["OriginatorConversationID"] = "AG_xyz_123"
+
+    handle_payout_callback(payload)
+
+    assert len(payout_env.enqueued) == 1
+    job = payout_env.enqueued[0]
+    assert job["request_name"] == "MPPR-2026-00001"
+
+    reconcile_payout(job["request_name"], job["parsed"], timeout=job["timeout"])
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["status"] == "Paid"
+    assert pe_calls == ["MPPR-2026-00001", "PE-0001"]
 
 
 def test_conversation_id_mismatch_is_dropped_with_log(payout_env):
@@ -542,14 +592,38 @@ def test_send_payment_request_zero_response_code_stores_conversation_id(payout_e
     monkeypatch.setattr("swdpay.daraja.encrypt_security_credential", lambda password, cert: "ENCRYPTED")
     monkeypatch.setattr(
         "swdpay.daraja.daraja_post",
-        lambda settings, path, body: {"ResponseCode": "0", "ConversationID": "AG_20260727_abc123"},
+        lambda settings, path, body: {
+            "ResponseCode": "0",
+            "ConversationID": "AG_20260727_abc123",
+            "OriginatorConversationID": "AG_20260727_orig456",
+        },
     )
 
     send_payment_request("MPPR-2026-00001")
 
     doc = payout_env.db.docs["MPPR-2026-00001"]
     assert doc["status"] == "Sending"
+    # Both Daraja-issued ids from the sync response are captured — v1 doesn't accept
+    # a caller-supplied OriginatorConversationID, so this is the only place it's known.
     assert doc["conversation_id"] == "AG_20260727_abc123"
+    assert doc["originator_conversation_id"] == "AG_20260727_orig456"
+
+
+def test_send_payment_request_missing_originator_id_falls_back_to_doc_name(payout_env, monkeypatch):
+    # A v3-style/edge response that omits OriginatorConversationID must not clobber
+    # correlation — fall back to the doc name (the pre-dispatch default).
+    payout_env.db.docs["MPPR-2026-00001"] = _approved_till_doc()
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: _sending_settings())
+    monkeypatch.setattr("swdpay.daraja.encrypt_security_credential", lambda password, cert: "ENCRYPTED")
+    monkeypatch.setattr(
+        "swdpay.daraja.daraja_post",
+        lambda settings, path, body: {"ResponseCode": "0", "ConversationID": "AG_20260727_abc123"},
+    )
+
+    send_payment_request("MPPR-2026-00001")
+
+    doc = payout_env.db.docs["MPPR-2026-00001"]
+    assert doc["originator_conversation_id"] == "MPPR-2026-00001"
 
 
 # --- parse_balance_result: tolerant extraction of the AccountBalance parameter ---

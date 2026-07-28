@@ -67,6 +67,18 @@ class FakeDB:
         return name in self.docs
 
     def get_value(self, doctype, name, fieldname=None, for_update=False):
+        if isinstance(name, dict):
+            # Filters form: frappe.db.get_value(doctype, {field: value}, fieldname) —
+            # used by find_request_by_originator's fallback lookup by
+            # originator_conversation_id. Linear scan is fine for these tiny fixtures.
+            for doc_name, record in self.docs.items():
+                if all(record.get(key) == value for key, value in name.items()):
+                    if fieldname == "name":
+                        return doc_name
+                    if isinstance(fieldname, (list, tuple)):
+                        return tuple(record.get(f) for f in fieldname)
+                    return record.get(fieldname)
+            return None
         record = self.docs.get(name)
         if record is None:
             return None

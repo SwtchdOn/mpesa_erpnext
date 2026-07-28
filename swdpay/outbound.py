@@ -55,8 +55,10 @@ def _callback_url(callback_base, callback_token, method):
 def build_payout_request(request, *, initiator_name, security_credential, shortcode,
                          b2c_shortcode, callback_base, callback_token):
     remarks = (request.description or "Field purchase")[:100]
+    # Neither Daraja v1 API (B2C or B2B) documents OriginatorConversationID as a
+    # request field — Daraja generates its own and returns it in the synchronous
+    # response. Correlation is captured from the response, not supplied here.
     common = {
-        "OriginatorConversationID": request.name,
         "SecurityCredential": security_credential,
         "Amount": int(request.amount),
         "Remarks": remarks,
@@ -73,7 +75,7 @@ def build_payout_request(request, *, initiator_name, security_credential, shortc
             "PartyB": request.phone_number,
             "Occasion": (request.project or "")[:100] if getattr(request, "project", None) else "",
         }
-        return {"path": "/mpesa/b2c/v3/paymentrequest", "body": body}
+        return {"path": "/mpesa/b2c/v1/paymentrequest", "body": body}
 
     body = {
         **common,
@@ -221,7 +223,18 @@ def send_payment_request(request_name):
             "error_message": f"Daraja rejected the request (ResponseCode {response_code}): {response.get('ResponseDescription') or ''}".strip(),
         })
         return
-    doc.db_set("conversation_id", response.get("ConversationID"))
+    # v1 doesn't accept a caller-supplied OriginatorConversationID — Daraja mints its
+    # own and returns both ids here. `or doc.name` keeps v3-style/edge responses (or a
+    # response missing the field) falling back to the pre-dispatch default already set
+    # by after_insert, which is what callbacks/watchdog correlate against pre-dispatch.
+    doc.db_set({
+        "conversation_id": response.get("ConversationID"),
+        "originator_conversation_id": response.get("OriginatorConversationID") or doc.name,
+    })
+    # Close the race: Safaricom's callback can arrive before this job's own
+    # transaction would otherwise commit (at job completion) — commit explicitly so
+    # the callback handler's lookup by the new originator_conversation_id can see it.
+    frappe.db.commit()
 
 
 def recipient_identifier(request):
@@ -334,13 +347,28 @@ def payout_outcome(parsed):
     return "Paid" if parsed.get("result_code") == 0 else "Failed"
 
 
+def find_request_by_originator(originator):
+    """Resolve a callback's originator id to a doc name.
+
+    Under Daraja v1, OriginatorConversationID is minted by Daraja (not supplied by
+    us), so the parsed originator may be either the doc name (pre-dispatch default,
+    or a v3-style/back-compat response) or a Daraja-generated id captured from the
+    dispatch response and stored on `originator_conversation_id`.
+    """
+    if not originator:
+        return None
+    if frappe.db.exists("M-Pesa Payment Request", originator):
+        return originator  # doc-name correlation (pre-dispatch/back-compat)
+    return frappe.db.get_value("M-Pesa Payment Request", {"originator_conversation_id": originator}, "name")
+
+
 def handle_payout_callback(payload, timeout=False):
     """Raw-first: persist the payload on the request, then queue reconciliation."""
     import json
 
     parsed = parse_payout_result(payload)
-    name = parsed.get("originator_conversation_id")
-    if not name or not frappe.db.exists("M-Pesa Payment Request", name):
+    name = find_request_by_originator(parsed.get("originator_conversation_id"))
+    if not name:
         frappe.log_error(
             title="swdpay payout callback for unknown request",
             message=json.dumps(payload, default=str),
@@ -459,7 +487,7 @@ def resolve_stuck_payouts():
     stuck = frappe.get_all(
         "M-Pesa Payment Request",
         filters={"status": "Sending", "modified": ["<", cutoff]},
-        fields=["name", "modified", "error_message"],
+        fields=["name", "modified", "error_message", "originator_conversation_id"],
     )
     if not stuck:
         return
@@ -479,7 +507,7 @@ def resolve_stuck_payouts():
                     update_modified=False,
                 )
             continue
-        queryable.append(row["name"])
+        queryable.append(row)
 
     if not queryable:
         return
@@ -489,14 +517,17 @@ def resolve_stuck_payouts():
     )
     callback_base = (settings.callback_base_url or "").rstrip("/")
     token = settings.get_password("callback_secret")
-    for name in queryable:
+    for row in queryable:
+        name = row["name"]
         try:
             daraja_post(settings, "/mpesa/transactionstatus/v1/query", {
                 "Initiator": settings.initiator_name,
                 "SecurityCredential": credential,
                 "CommandID": "TransactionStatusQuery",
                 "TransactionID": "",
-                "OriginalConversationID": name,
+                # The doc's STORED originator id — after dispatch this is Daraja's own
+                # id (captured from the payout response), not the doc name.
+                "OriginalConversationID": row.get("originator_conversation_id") or name,
                 "PartyA": settings.paybill_number,
                 "IdentifierType": "4",
                 # NOTE: deliberately NOT payout_result — a status query's top-level
@@ -620,8 +651,8 @@ def handle_status_result(payload):
     import json
 
     parsed = parse_status_result(payload)
-    name = parsed.get("originator_conversation_id")
-    if not name or not frappe.db.exists("M-Pesa Payment Request", name):
+    name = find_request_by_originator(parsed.get("originator_conversation_id"))
+    if not name:
         frappe.log_error(title="swdpay status result for unknown request", message=json.dumps(payload, default=str))
         return
     # Raw-first, mirroring handle_payout_callback: persist before any downstream action.
