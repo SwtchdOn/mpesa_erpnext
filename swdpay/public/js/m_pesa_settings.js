@@ -2,7 +2,7 @@ frappe.ui.form.on("M-Pesa Settings", {
   refresh(frm) {
     if (frm.doc.enable_outbound_payments) {
       frm.add_custom_button(__("Test Initiator (Balance Query)"), () => {
-        frm.call("swdpay.outbound.test_initiator_balance").then((r) => {
+        frappe.call({ method: "swdpay.outbound.test_initiator_balance", freeze: true }).then((r) => {
           const response = r.message || {};
           const code = frappe.utils.escape_html(String(response.ResponseCode ?? ""));
           const description = frappe.utils.escape_html(response.ResponseDescription || "");
