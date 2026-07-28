@@ -1,0 +1,13 @@
+[
+ {
+  "doctype": "Custom Field",
+  "name": "Supplier-mpesa_identifier",
+  "dt": "Supplier",
+  "fieldname": "mpesa_identifier",
+  "label": "M-Pesa Identifier (Till/Paybill/Phone)",
+  "fieldtype": "Data",
+  "insert_after": "supplier_group",
+  "unique": 0,
+  "search_index": 1
+ }
+]

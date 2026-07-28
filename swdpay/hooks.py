@@ -7,6 +7,8 @@ app_license = "MIT"
 
 doctype_js = {
     "M-Pesa Transaction": "public/js/m_pesa_transaction.js",
+    "M-Pesa Payment Request": "public/js/m_pesa_payment_request.js",
+    "M-Pesa Settings": "public/js/m_pesa_settings.js",
 }
 
 jinja = {
@@ -16,9 +18,19 @@ jinja = {
     ],
 }
 
+scheduler_events = {
+    "cron": {
+        "*/5 * * * *": ["swdpay.outbound.resolve_stuck_payouts"],
+    },
+}
+
 fixtures = [
     {
         "dt": "Role",
-        "filters": [["role_name", "=", "M-Pesa Reconciliation Manager"]],
+        "filters": [["role_name", "in", ["M-Pesa Reconciliation Manager", "M-Pesa Payment Requester", "M-Pesa Payment Approver"]]],
+    },
+    {
+        "dt": "Custom Field",
+        "filters": [["dt", "=", "Supplier"], ["fieldname", "=", "mpesa_identifier"]],
     },
 ]

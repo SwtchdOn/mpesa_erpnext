@@ -74,3 +74,53 @@ def _get_callback_payload():
     payload.pop("cmd", None)
     payload.pop("token", None)
     return payload
+
+
+@frappe.whitelist(allow_guest=True)
+def payout_result(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_payout_callback
+
+    handle_payout_callback(_get_callback_payload())
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+@frappe.whitelist(allow_guest=True)
+def payout_timeout(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_payout_callback
+
+    handle_payout_callback(_get_callback_payload(), timeout=True)
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+@frappe.whitelist(allow_guest=True)
+def status_result(token=None):
+    _validate_callback_token(token)
+    from swdpay.outbound import handle_status_result
+
+    handle_status_result(_get_callback_payload())
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+@frappe.whitelist(allow_guest=True)
+def balance_result(token=None):
+    _validate_callback_token(token)
+    import json
+
+    from swdpay.outbound import parse_balance_result
+
+    payload = _get_callback_payload()
+    frappe.log_error(title="swdpay balance result", message=json.dumps(payload, default=str))
+
+    parsed = parse_balance_result(payload)
+    summary = " ".join(part for part in (parsed.get("result_desc"), parsed.get("account_balance")) if part).strip()
+    frappe.db.set_value("M-Pesa Settings", "M-Pesa Settings", {
+        "last_balance_result": summary,
+        "last_balance_checked": frappe.utils.now_datetime(),
+    })
+    frappe.db.commit()
+    frappe.local.response.update({"ResultCode": 0, "ResultDesc": "Accepted"})

@@ -1,0 +1,289 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "MPPR-.YYYY.-.#####",
+ "creation": "2026-07-27 23:51:02.697436",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "requested_by",
+  "project",
+  "amount",
+  "recipient_section",
+  "recipient_type",
+  "till_number",
+  "paybill_number",
+  "account_reference",
+  "phone_number",
+  "payee_name",
+  "description",
+  "party_section",
+  "party_type",
+  "party",
+  "receiver_public_name",
+  "daraja_section",
+  "originator_conversation_id",
+  "conversation_id",
+  "mpesa_transaction_id",
+  "result_code",
+  "result_desc",
+  "raw_result",
+  "receipt_section",
+  "receipt_pending",
+  "receipt_photo",
+  "etims_url",
+  "etims_invoice_number",
+  "receipt_captured_on",
+  "links_section",
+  "payment_entry",
+  "rejection_reason",
+  "error_message"
+ ],
+ "fields": [
+  {
+   "default": "Requested",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Requested\nApproved\nSending\nPaid\nFailed\nRejected\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Requested By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount (KES)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "recipient_section",
+   "fieldtype": "Section Break",
+   "label": "Recipient"
+  },
+  {
+   "fieldname": "recipient_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Recipient Type",
+   "options": "Buy Goods Till\nPaybill\nPhone",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.recipient_type=='Buy Goods Till'",
+   "fieldname": "till_number",
+   "fieldtype": "Data",
+   "label": "Till Number",
+   "mandatory_depends_on": "eval:doc.recipient_type=='Buy Goods Till'"
+  },
+  {
+   "depends_on": "eval:doc.recipient_type=='Paybill'",
+   "fieldname": "paybill_number",
+   "fieldtype": "Data",
+   "label": "Paybill Number",
+   "mandatory_depends_on": "eval:doc.recipient_type=='Paybill'"
+  },
+  {
+   "depends_on": "eval:doc.recipient_type=='Paybill'",
+   "fieldname": "account_reference",
+   "fieldtype": "Data",
+   "label": "Account Reference",
+   "mandatory_depends_on": "eval:doc.recipient_type=='Paybill'"
+  },
+  {
+   "depends_on": "eval:doc.recipient_type=='Phone'",
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "label": "Phone Number",
+   "mandatory_depends_on": "eval:doc.recipient_type=='Phone'"
+  },
+  {
+   "fieldname": "payee_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Payee Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "party_section",
+   "fieldtype": "Section Break",
+   "label": "Linked Party"
+  },
+  {
+   "fieldname": "party_type",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Party Type",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "party",
+   "fieldtype": "Dynamic Link",
+   "label": "Party",
+   "options": "party_type"
+  },
+  {
+   "fieldname": "receiver_public_name",
+   "fieldtype": "Data",
+   "label": "M-Pesa Registered Name",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "daraja_section",
+   "fieldtype": "Section Break",
+   "label": "Daraja"
+  },
+  {
+   "fieldname": "originator_conversation_id",
+   "fieldtype": "Data",
+   "label": "Originator Conversation ID",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "conversation_id",
+   "fieldtype": "Data",
+   "label": "Conversation ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mpesa_transaction_id",
+   "fieldtype": "Data",
+   "label": "M-Pesa Transaction ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_code",
+   "fieldtype": "Data",
+   "label": "Result Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_desc",
+   "fieldtype": "Small Text",
+   "label": "Result Description",
+   "read_only": 1
+  },
+  {
+   "fieldname": "raw_result",
+   "fieldtype": "Code",
+   "label": "Raw Result Payload",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_section",
+   "fieldtype": "Section Break",
+   "label": "Receipt / eTIMS"
+  },
+  {
+   "default": "0",
+   "fieldname": "receipt_pending",
+   "fieldtype": "Check",
+   "label": "Receipt Pending",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_photo",
+   "fieldtype": "Attach",
+   "label": "Receipt Photo"
+  },
+  {
+   "fieldname": "etims_url",
+   "fieldtype": "Small Text",
+   "label": "eTIMS URL"
+  },
+  {
+   "fieldname": "etims_invoice_number",
+   "fieldtype": "Data",
+   "label": "eTIMS Invoice Number"
+  },
+  {
+   "fieldname": "receipt_captured_on",
+   "fieldtype": "Datetime",
+   "label": "Receipt Captured On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "links_section",
+   "fieldtype": "Section Break",
+   "label": "Links"
+  },
+  {
+   "fieldname": "payment_entry",
+   "fieldtype": "Link",
+   "label": "Payment Entry",
+   "options": "Payment Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rejection_reason",
+   "fieldtype": "Small Text",
+   "label": "Rejection Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-27 23:57:10.232968",
+ "modified_by": "Administrator",
+ "module": "Swdpay",
+ "name": "M-Pesa Payment Request",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "if_owner": 1,
+   "read": 1,
+   "role": "M-Pesa Payment Requester"
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "M-Pesa Payment Approver",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
