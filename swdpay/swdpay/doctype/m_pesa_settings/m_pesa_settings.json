@@ -24,6 +24,8 @@
     "outbound_paid_from_account",
     "outbound_mode_of_payment",
     "callback_base_url",
+    "last_balance_result",
+    "last_balance_checked",
     "accounting_section",
     "default_mode_of_payment",
     "paid_to_account",
@@ -149,6 +151,21 @@
       "label": "Callback Base URL (public site URL)"
     },
     {
+      "depends_on": "enable_outbound_payments",
+      "description": "Populated by the balance_result callback after using the Test Initiator (Balance Query) button. Only reachable on a publicly accessible site.",
+      "fieldname": "last_balance_result",
+      "fieldtype": "Small Text",
+      "label": "Last Balance Result",
+      "read_only": 1
+    },
+    {
+      "depends_on": "enable_outbound_payments",
+      "fieldname": "last_balance_checked",
+      "fieldtype": "Datetime",
+      "label": "Last Balance Checked",
+      "read_only": 1
+    },
+    {
       "fieldname": "accounting_section",
       "fieldtype": "Section Break",
       "label": "Accounting"
@@ -243,7 +260,7 @@
     }
   ],
   "issingle": 1,
-  "modified": "2026-07-02 00:00:00.000000",
+  "modified": "2026-07-28 00:00:00.000000",
   "module": "Swdpay",
   "name": "M-Pesa Settings",
   "owner": "Administrator",

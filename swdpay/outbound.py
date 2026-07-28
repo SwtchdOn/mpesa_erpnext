@@ -514,6 +514,63 @@ def resolve_stuck_payouts():
             frappe.log_error(title=f"swdpay watchdog query failed: {name}")
 
 
+def parse_balance_result(payload):
+    """Extract the AccountBalance parameter from a Daraja AccountBalance result.
+
+    Tolerant of a missing/empty Result or ResultParameters — an inconclusive or
+    malformed callback should still return a usable (mostly-None) dict rather
+    than raising.
+    """
+    result = (payload or {}).get("Result") or {}
+    params = {}
+    for row in ((result.get("ResultParameters") or {}).get("ResultParameter") or []):
+        if isinstance(row, dict) and row.get("Key"):
+            params[row["Key"]] = row.get("Value")
+
+    code = result.get("ResultCode")
+    return {
+        "result_code": int(code) if code is not None else None,
+        "result_desc": result.get("ResultDesc"),
+        "account_balance": params.get("AccountBalance"),
+    }
+
+
+@frappe.whitelist()
+def test_initiator_balance():
+    """Fire a read-only AccountBalance query to validate the configured initiator.
+
+    Proves consumer key/secret (OAuth), initiator name, and security-credential
+    encryption against the live Daraja environment without moving any money.
+    The synchronous response is returned to the caller; the full result arrives
+    at the balance_result callback (requires a publicly reachable site).
+    """
+    from swdpay.daraja import daraja_post, encrypt_security_credential
+
+    if "System Manager" not in frappe.get_roles() and "M-Pesa Payment Approver" not in frappe.get_roles():
+        frappe.throw("You do not have permission to test the initiator")
+
+    settings = frappe.get_single("M-Pesa Settings")
+    if not settings.enable_outbound_payments:
+        frappe.throw("Enable outbound payments in M-Pesa Settings first")
+
+    credential = encrypt_security_credential(
+        settings.get_password("initiator_password"), settings.security_certificate
+    )
+    callback_base = (settings.callback_base_url or "").rstrip("/")
+    token = settings.get_password("callback_secret")
+    response = daraja_post(settings, "/mpesa/accountbalance/v1/query", {
+        "Initiator": settings.initiator_name,
+        "SecurityCredential": credential,
+        "CommandID": "AccountBalance",
+        "PartyA": settings.paybill_number,
+        "IdentifierType": "4",
+        "Remarks": "swdpay initiator test",
+        "ResultURL": _callback_url(callback_base, token, "balance_result"),
+        "QueueTimeOutURL": _callback_url(callback_base, token, "balance_result"),
+    })
+    return response
+
+
 def parse_status_result(payload):
     """Map a Daraja Transaction Status result onto the payout-result shape.
 

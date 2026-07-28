@@ -13,6 +13,9 @@ from swdpay.outbound import (
     payout_outcome, handle_payout_callback, reconcile_payout,
     parse_status_result, handle_status_result, plan_receipt_attach,
     approve_and_send, reject_request, send_payment_request,
+    parse_balance_result,
+    # Aliased: pytest would otherwise collect this as a test itself (name starts with "test_").
+    test_initiator_balance as call_test_initiator_balance,
 )
 
 
@@ -547,3 +550,74 @@ def test_send_payment_request_zero_response_code_stores_conversation_id(payout_e
     doc = payout_env.db.docs["MPPR-2026-00001"]
     assert doc["status"] == "Sending"
     assert doc["conversation_id"] == "AG_20260727_abc123"
+
+
+# --- parse_balance_result: tolerant extraction of the AccountBalance parameter ---
+
+def test_parse_balance_result_extracts_account_balance():
+    payload = {"Result": {
+        "ResultCode": 0, "ResultDesc": "The service request is processed successfully.",
+        "ResultParameters": {"ResultParameter": [
+            {"Key": "AccountBalance", "Value": "Working Account|KES|150000.00|150000.00|0.00|0.00"},
+            {"Key": "BOCompletedTime", "Value": 20260727120000},
+        ]},
+    }}
+    parsed = parse_balance_result(payload)
+    assert parsed["result_code"] == 0
+    assert parsed["result_desc"] == "The service request is processed successfully."
+    assert parsed["account_balance"] == "Working Account|KES|150000.00|150000.00|0.00|0.00"
+
+
+def test_parse_balance_result_tolerant_of_missing_parameter():
+    payload = {"Result": {"ResultCode": 0, "ResultDesc": "OK", "ResultParameters": {"ResultParameter": []}}}
+    parsed = parse_balance_result(payload)
+    assert parsed["account_balance"] is None
+    assert parsed["result_code"] == 0
+
+
+def test_parse_balance_result_tolerant_of_empty_payload():
+    assert parse_balance_result({}) == {"result_code": None, "result_desc": None, "account_balance": None}
+    assert parse_balance_result(None) == {"result_code": None, "result_desc": None, "account_balance": None}
+
+
+# --- test_initiator_balance: role/enabled guards + the AccountBalance request shape ---
+
+def test_test_initiator_balance_requires_a_role(monkeypatch):
+    monkeypatch.setattr(frappe_stub, "get_roles", lambda: [])
+    with pytest.raises(Exception, match="permission"):
+        call_test_initiator_balance()
+
+
+def test_test_initiator_balance_requires_outbound_enabled(monkeypatch):
+    monkeypatch.setattr(frappe_stub, "get_roles", lambda: ["M-Pesa Payment Approver"])
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: _sending_settings(enable_outbound_payments=False))
+    with pytest.raises(Exception, match="Enable outbound payments"):
+        call_test_initiator_balance()
+
+
+def test_test_initiator_balance_sends_account_balance_query(monkeypatch):
+    monkeypatch.setattr(frappe_stub, "get_roles", lambda: ["M-Pesa Payment Approver"])
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: _sending_settings())
+    monkeypatch.setattr("swdpay.daraja.encrypt_security_credential", lambda password, cert: "ENCRYPTED")
+
+    captured = {}
+
+    def fake_daraja_post(settings, path, body):
+        captured["path"] = path
+        captured["body"] = body
+        return {"ResponseCode": "0", "ResponseDescription": "Accept the service request successfully."}
+
+    monkeypatch.setattr("swdpay.daraja.daraja_post", fake_daraja_post)
+
+    response = call_test_initiator_balance()
+
+    assert captured["path"] == "/mpesa/accountbalance/v1/query"
+    body = captured["body"]
+    assert body["CommandID"] == "AccountBalance"
+    assert body["Initiator"] == "apiop"
+    assert body["SecurityCredential"] == "ENCRYPTED"
+    assert body["PartyA"] == "4165101"
+    assert body["IdentifierType"] == "4"
+    assert body["ResultURL"] == "https://erp.example.com/api/method/swdpay.api.callbacks.balance_result?token=S3CRET"
+    assert body["QueueTimeOutURL"] == body["ResultURL"]
+    assert response["ResponseCode"] == "0"

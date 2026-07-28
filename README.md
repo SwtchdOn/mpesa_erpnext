@@ -377,6 +377,10 @@ There is nothing to paste into the Daraja portal for these — they are generate
 6. An Approver can instead **Reject** a `Requested` request with a reason, moving it straight to `Rejected`.
 7. If a dispatch is ambiguous (network error, or Daraja never calls back) the request stays `Sending`; the `resolve_stuck_payouts` watchdog queries `TransactionStatusQuery` for anything stuck longer than 5 minutes and reconciles from that instead.
 
+### Test Initiator (Balance Query)
+
+Once `Enable Outbound Payments` is on, `M-Pesa Settings` shows a **Test Initiator (Balance Query)** button that fires a read-only Daraja `AccountBalance` query (`swdpay.outbound.test_initiator_balance`) — no money moves. A successful synchronous response only proves the OAuth consumer key/secret, initiator name, and security-credential encryption are all valid against the configured Daraja environment; it does **not** prove the balance itself, since Daraja returns that asynchronously to the `balance_result` callback (a `swdpay.api.callbacks.balance_result` endpoint requiring the same publicly reachable site as the other outbound callbacks). When that callback lands, it logs the full payload to the Error Log (`swdpay balance result`) and writes a short human-readable summary to the new `Last Balance Result` / `Last Balance Checked` fields on `M-Pesa Settings`.
+
 ### Production Prerequisites
 
 Keep `Enable Outbound Payments` **off** until all of the following are true:
