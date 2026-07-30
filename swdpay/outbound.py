@@ -121,6 +121,73 @@ def parse_etims_invoice_number(url):
     return values[0] if values else None
 
 
+def plan_auto_approval(amount, *, enabled, auto_limit, daily_limit, todays_auto_total):
+    """Pure decision: may this request skip the human approver?
+
+    Auto-send needs the feature on, a configured per-request limit the amount
+    stays within, and the requester's day total (auto-approved only) to remain
+    inside the per-employee cap. Anything else → the normal approval flow.
+    """
+    if not enabled:
+        return False
+    if not auto_limit or amount > auto_limit:
+        return False
+    if daily_limit and (todays_auto_total + amount) > daily_limit:
+        return False
+    return True
+
+
+def todays_auto_approved_total(requested_by, exclude=None):
+    """Sum of the requester's auto-approved amounts today (excluding failures)."""
+    from frappe.utils import nowdate
+
+    filters = {
+        "requested_by": requested_by,
+        "auto_approved": 1,
+        "status": ["not in", ["Rejected", "Failed"]],
+        "creation": ["between", [f"{nowdate()} 00:00:00", f"{nowdate()} 23:59:59"]],
+    }
+    if exclude:
+        filters["name"] = ["!=", exclude]
+    rows = frappe.get_all("M-Pesa Payment Request", filters=filters, fields=["amount"])
+    return sum((r.amount or 0) for r in rows)
+
+
+def maybe_auto_approve(doc):
+    """Auto-approve + dispatch a just-created request when it clears the limits.
+
+    Called from after_insert. Best-effort: any error leaves the request in the
+    normal Requested flow — creation must never fail because auto-approval did.
+    """
+    try:
+        settings = frappe.get_single("M-Pesa Settings")
+        if not settings.enable_outbound_payments:
+            return False
+        ok = plan_auto_approval(
+            doc.amount or 0,
+            enabled=bool(getattr(settings, "enable_auto_approval", 0)),
+            auto_limit=getattr(settings, "auto_approve_limit", 0) or 0,
+            daily_limit=getattr(settings, "daily_auto_limit_per_employee", 0) or 0,
+            todays_auto_total=todays_auto_approved_total(doc.requested_by, exclude=doc.name),
+        )
+        if not ok:
+            return False
+        validate_payment_request(doc, max_amount=settings.max_request_amount)
+        doc.db_set({"status": "Approved", "auto_approved": 1})
+        frappe.enqueue(
+            "swdpay.outbound.send_payment_request",
+            queue="short",
+            job_id=f"swdpay-payout-{doc.name}",
+            deduplicate=True,
+            enqueue_after_commit=True,
+            request_name=doc.name,
+        )
+        return True
+    except Exception:
+        frappe.log_error(title=f"swdpay auto-approval failed: {doc.name}")
+        return False
+
+
 def plan_approval(status, *, enabled, has_role):
     if not enabled:
         return "Outbound payments are disabled in M-Pesa Settings"
@@ -181,6 +248,20 @@ def send_payment_request(request_name):
         return  # idempotent: stale/duplicate job
 
     settings = frappe.get_single("M-Pesa Settings")
+
+    # An auto-approved request re-proves its limits at dispatch (the settings, or
+    # the day's total, may have moved since approval). Failing the re-check is not
+    # an error — it just falls back to the human approval flow.
+    if getattr(doc, "auto_approved", 0) and not plan_auto_approval(
+        doc.amount or 0,
+        enabled=bool(getattr(settings, "enable_auto_approval", 0)),
+        auto_limit=getattr(settings, "auto_approve_limit", 0) or 0,
+        daily_limit=getattr(settings, "daily_auto_limit_per_employee", 0) or 0,
+        todays_auto_total=todays_auto_approved_total(doc.requested_by, exclude=doc.name),
+    ):
+        doc.db_set({"status": "Requested", "auto_approved": 0})
+        return
+
     try:
         # Re-check the amount cap at dispatch time too: settings (or the request,
         # via some other path) may have changed between approval and now.
@@ -343,6 +424,73 @@ def create_payout_payment_entry(doc, settings):
     return payment_entry.name
 
 
+PLACEHOLDER_ITEM = "FIELD-PURCHASE"
+
+
+def ensure_placeholder_item():
+    """A generic non-stock service item that draft Purchase Invoices start with.
+
+    Ops replaces the line with real items before submitting — the placeholder
+    just lets the PI exist (and carry the amount) the moment money moves.
+    """
+    if frappe.db.exists("Item", PLACEHOLDER_ITEM):
+        return PLACEHOLDER_ITEM
+    frappe.get_doc({
+        "doctype": "Item",
+        "item_code": PLACEHOLDER_ITEM,
+        "item_name": "Field Purchase (placeholder)",
+        "item_group": (
+            "All Item Groups"
+            if frappe.db.exists("Item Group", "All Item Groups")
+            else frappe.get_all("Item Group", filters={"is_group": 0}, limit=1)[0].name
+        ),
+        "stock_uom": "Nos",
+        "is_stock_item": 0,
+        "is_purchase_item": 1,
+        "is_sales_item": 0,
+        "description": "Placeholder line for field M-Pesa purchases — replace with the real items before submitting.",
+    }).insert(ignore_permissions=True)
+    return PLACEHOLDER_ITEM
+
+
+def create_payout_purchase_invoice(doc, settings):
+    """Draft PI mirroring a Paid payout (2026-07-30 meeting): a worklist marker
+    for ops carrying the amount, the receipt attachments, and links both ways.
+
+    Only for Supplier parties — an Employee payout books against the employee
+    (a reimbursement), where a supplier invoice would double-count the expense.
+    Idempotent via the purchase_invoice link. Never submits anything.
+    """
+    if doc.purchase_invoice:
+        return doc.purchase_invoice
+    if doc.party_type != "Supplier" or not doc.party:
+        return None
+
+    from frappe.utils import getdate, now_datetime
+
+    ensure_placeholder_item()
+    pi = frappe.new_doc("Purchase Invoice")
+    pi.update({
+        "supplier": doc.party,
+        "company": settings.company,
+        "posting_date": getdate(now_datetime()),
+        "bill_no": doc.mpesa_transaction_id or None,
+        "bill_date": getdate(now_datetime()),
+        "project": doc.project or None,
+        "remarks": f"M-Pesa payout {doc.name} (Payment Entry {doc.payment_entry or '—'}): {doc.description or doc.payee_name}",
+        "items": [{
+            "item_code": PLACEHOLDER_ITEM,
+            "qty": 1,
+            "rate": doc.amount,
+            "description": (doc.description or "Field purchase") + f" — M-Pesa {doc.mpesa_transaction_id or doc.name}",
+            "project": doc.project or None,
+        }],
+    })
+    pi.insert(ignore_permissions=True)
+    doc.db_set("purchase_invoice", pi.name)
+    return pi.name
+
+
 def payout_outcome(parsed):
     return "Paid" if parsed.get("result_code") == 0 else "Failed"
 
@@ -448,6 +596,12 @@ def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=Tr
             # Money moved; accounting failed. Keep Paid, surface the error for ops.
             doc.db_set("error_message", "Paid, but Payment Entry creation failed — see Error Log")
             frappe.log_error(title=f"swdpay payout PE failed: {request_name}")
+        try:
+            create_payout_purchase_invoice(doc, settings)
+        except Exception:
+            # The PI is an ops convenience — its failure must not disturb the
+            # Paid status or the Payment Entry that already booked the money.
+            frappe.log_error(title=f"swdpay payout PI failed: {request_name}")
 
 
 STUCK_AFTER_MINUTES = 5

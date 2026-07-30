@@ -53,6 +53,14 @@
    "read_only": 1
   },
   {
+   "fieldname": "auto_approved",
+   "fieldtype": "Check",
+   "label": "Auto-Approved",
+   "read_only": 1,
+   "default": "0",
+   "in_standard_filter": 1
+  },
+  {
    "fieldname": "requested_by",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -237,6 +245,13 @@
    "fieldtype": "Link",
    "label": "Payment Entry",
    "options": "Payment Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "label": "Purchase Invoice",
+   "options": "Purchase Invoice",
    "read_only": 1
   },
   {

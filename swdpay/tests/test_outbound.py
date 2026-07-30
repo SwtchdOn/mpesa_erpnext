@@ -695,3 +695,32 @@ def test_test_initiator_balance_sends_account_balance_query(monkeypatch):
     assert body["ResultURL"] == "https://erp.example.com/api/method/swdpay.api.callbacks.balance_result?token=S3CRET"
     assert body["QueueTimeOutURL"] == body["ResultURL"]
     assert response["ResponseCode"] == "0"
+
+
+# --- Auto-approval limits (2026-07-30 meeting) ------------------------------
+
+from swdpay.outbound import plan_auto_approval
+
+
+def test_auto_approval_requires_feature_enabled():
+    assert plan_auto_approval(500, enabled=False, auto_limit=1000, daily_limit=0, todays_auto_total=0) is False
+
+
+def test_auto_approval_within_limit_passes():
+    assert plan_auto_approval(1000, enabled=True, auto_limit=1000, daily_limit=0, todays_auto_total=0) is True
+
+
+def test_auto_approval_over_per_request_limit_fails():
+    assert plan_auto_approval(1001, enabled=True, auto_limit=1000, daily_limit=0, todays_auto_total=0) is False
+
+
+def test_auto_approval_requires_a_configured_limit():
+    # A zero/unset limit must NOT mean "everything auto-approves".
+    assert plan_auto_approval(1, enabled=True, auto_limit=0, daily_limit=0, todays_auto_total=0) is False
+
+
+def test_auto_approval_daily_cap_counts_the_new_request():
+    # 800 already sent today + this 300 breaches a 1000 cap.
+    assert plan_auto_approval(300, enabled=True, auto_limit=500, daily_limit=1000, todays_auto_total=800) is False
+    # 700 + 300 exactly hits the cap — allowed.
+    assert plan_auto_approval(300, enabled=True, auto_limit=500, daily_limit=1000, todays_auto_total=700) is True

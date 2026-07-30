@@ -1,284 +1,306 @@
 {
-  "actions": [],
-  "allow_rename": 0,
-  "creation": "2026-05-19 00:00:00.000000",
-  "doctype": "DocType",
-  "editable_grid": 1,
-  "engine": "InnoDB",
-  "field_order": [
-    "company",
-    "paybill_number",
-    "environment",
-    "credentials_section",
-    "consumer_key",
-    "consumer_secret",
-    "passkey",
-    "callback_secret",
-    "outbound_section",
-    "enable_outbound_payments",
-    "initiator_name",
-    "initiator_password",
-    "security_certificate",
-    "b2c_shortcode",
-    "max_request_amount",
-    "outbound_paid_from_account",
-    "outbound_mode_of_payment",
-    "callback_base_url",
-    "last_balance_result",
-    "last_balance_checked",
-    "accounting_section",
-    "default_mode_of_payment",
-    "paid_to_account",
-    "default_receivable_account",
-    "payment_account_mappings",
-    "write_off_section",
-    "enable_small_difference_write_off",
-    "max_write_off_difference",
-    "write_off_account",
-    "write_off_cost_center",
-    "allow_partial_payments",
-    "allow_overpayments",
-    "allow_customer_phone_matching",
-    "enable_strict_c2b_validation",
-    "auto_submit_payment_entry"
-  ],
-  "fields": [
-    {
-      "fieldname": "company",
-      "fieldtype": "Link",
-      "label": "Company",
-      "options": "Company",
-      "reqd": 1
-    },
-    {
-      "fieldname": "paybill_number",
-      "fieldtype": "Data",
-      "label": "Paybill Number",
-      "reqd": 1
-    },
-    {
-      "default": "Sandbox",
-      "fieldname": "environment",
-      "fieldtype": "Select",
-      "label": "Environment",
-      "options": "Sandbox\nProduction",
-      "reqd": 1
-    },
-    {
-      "fieldname": "credentials_section",
-      "fieldtype": "Section Break",
-      "label": "Credentials"
-    },
-    {
-      "fieldname": "consumer_key",
-      "fieldtype": "Password",
-      "label": "Consumer Key"
-    },
-    {
-      "fieldname": "consumer_secret",
-      "fieldtype": "Password",
-      "label": "Consumer Secret"
-    },
-    {
-      "fieldname": "passkey",
-      "fieldtype": "Password",
-      "label": "Passkey"
-    },
-    {
-      "fieldname": "callback_secret",
-      "fieldtype": "Password",
-      "label": "Callback Secret / Token"
-    },
-    {
-      "fieldname": "outbound_section",
-      "fieldtype": "Section Break",
-      "label": "Outbound Payments (B2B / B2C)"
-    },
-    {
-      "default": "0",
-      "fieldname": "enable_outbound_payments",
-      "fieldtype": "Check",
-      "label": "Enable Outbound Payments"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "initiator_name",
-      "fieldtype": "Data",
-      "label": "Initiator Name"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "initiator_password",
-      "fieldtype": "Password",
-      "label": "Initiator Password"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "security_certificate",
-      "fieldtype": "Code",
-      "label": "Daraja Security Certificate (PEM)"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "b2c_shortcode",
-      "fieldtype": "Data",
-      "label": "B2C Shortcode (defaults to Paybill)"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "max_request_amount",
-      "fieldtype": "Currency",
-      "label": "Max Request Amount"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "outbound_paid_from_account",
-      "fieldtype": "Link",
-      "label": "Outbound Paid From Account",
-      "options": "Account"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "outbound_mode_of_payment",
-      "fieldtype": "Link",
-      "label": "Outbound Mode of Payment",
-      "options": "Mode of Payment"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "callback_base_url",
-      "fieldtype": "Data",
-      "label": "Callback Base URL (public site URL)"
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "description": "Populated by the balance_result callback after using the Test Initiator (Balance Query) button. Only reachable on a publicly accessible site.",
-      "fieldname": "last_balance_result",
-      "fieldtype": "Small Text",
-      "label": "Last Balance Result",
-      "read_only": 1
-    },
-    {
-      "depends_on": "enable_outbound_payments",
-      "fieldname": "last_balance_checked",
-      "fieldtype": "Datetime",
-      "label": "Last Balance Checked",
-      "read_only": 1
-    },
-    {
-      "fieldname": "accounting_section",
-      "fieldtype": "Section Break",
-      "label": "Accounting"
-    },
-    {
-      "fieldname": "default_mode_of_payment",
-      "fieldtype": "Link",
-      "label": "Default Mode of Payment",
-      "options": "Mode of Payment"
-    },
-    {
-      "fieldname": "paid_to_account",
-      "fieldtype": "Link",
-      "label": "Paid To Account",
-      "options": "Account"
-    },
-    {
-      "fieldname": "default_receivable_account",
-      "fieldtype": "Link",
-      "label": "Default Receivable Account",
-      "options": "Account"
-    },
-    {
-      "fieldname": "payment_account_mappings",
-      "fieldtype": "Table",
-      "label": "Payment Account Mappings",
-      "options": "M-Pesa Payment Account Mapping"
-    },
-    {
-      "fieldname": "write_off_section",
-      "fieldtype": "Section Break",
-      "label": "Small Difference Write Off"
-    },
-    {
-      "default": "0",
-      "description": "Automatically book small differences caused by M-Pesa whole-shilling payments: invoice shortfalls are written off and small overpayments are recorded as a gain in the Write Off Account.",
-      "fieldname": "enable_small_difference_write_off",
-      "fieldtype": "Check",
-      "label": "Enable Small Difference Write Off"
-    },
-    {
-      "default": "1",
-      "description": "Maximum difference, in either direction, between the payment and the invoice outstanding amount that is booked to the Write Off Account. Overpayments above this are kept as customer credit when Allow Overpayments is enabled.",
-      "fieldname": "max_write_off_difference",
-      "fieldtype": "Currency",
-      "label": "Maximum Write Off Difference"
-    },
-    {
-      "depends_on": "eval:doc.enable_small_difference_write_off",
-      "fieldname": "write_off_account",
-      "fieldtype": "Link",
-      "label": "Write Off Account",
-      "options": "Account"
-    },
-    {
-      "depends_on": "eval:doc.enable_small_difference_write_off",
-      "fieldname": "write_off_cost_center",
-      "fieldtype": "Link",
-      "label": "Write Off Cost Center",
-      "options": "Cost Center"
-    },
-    {
-      "default": "1",
-      "fieldname": "allow_partial_payments",
-      "fieldtype": "Check",
-      "label": "Allow Partial Payments"
-    },
-    {
-      "default": "0",
-      "fieldname": "allow_overpayments",
-      "fieldtype": "Check",
-      "label": "Allow Overpayments"
-    },
-    {
-      "default": "0",
-      "fieldname": "allow_customer_phone_matching",
-      "fieldtype": "Check",
-      "label": "Allow Customer Phone Matching"
-    },
-    {
-      "default": "0",
-      "description": "When enabled, the validation URL rejects unknown or missing account numbers before the customer completes payment. Keep disabled until your customer payment references are clean.",
-      "fieldname": "enable_strict_c2b_validation",
-      "fieldtype": "Check",
-      "label": "Enable Strict C2B Validation"
-    },
-    {
-      "default": "1",
-      "fieldname": "auto_submit_payment_entry",
-      "fieldtype": "Check",
-      "label": "Auto Submit Payment Entry"
-    }
-  ],
-  "issingle": 1,
-  "modified": "2026-07-28 00:00:00.000000",
-  "module": "Swdpay",
-  "name": "M-Pesa Settings",
-  "owner": "Administrator",
-  "permissions": [
-    {
-      "create": 1,
-      "delete": 1,
-      "email": 1,
-      "export": 1,
-      "print": 1,
-      "read": 1,
-      "report": 1,
-      "role": "System Manager",
-      "share": 1,
-      "write": 1
-    }
-  ],
-  "quick_entry": 0,
-  "sort_field": "modified",
-  "sort_order": "DESC"
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-05-19 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "paybill_number",
+  "environment",
+  "credentials_section",
+  "consumer_key",
+  "consumer_secret",
+  "passkey",
+  "callback_secret",
+  "outbound_section",
+  "enable_outbound_payments",
+  "initiator_name",
+  "initiator_password",
+  "security_certificate",
+  "b2c_shortcode",
+  "max_request_amount",
+  "outbound_paid_from_account",
+  "outbound_mode_of_payment",
+  "callback_base_url",
+  "last_balance_result",
+  "last_balance_checked",
+  "accounting_section",
+  "default_mode_of_payment",
+  "paid_to_account",
+  "default_receivable_account",
+  "payment_account_mappings",
+  "write_off_section",
+  "enable_small_difference_write_off",
+  "max_write_off_difference",
+  "write_off_account",
+  "write_off_cost_center",
+  "allow_partial_payments",
+  "allow_overpayments",
+  "allow_customer_phone_matching",
+  "enable_strict_c2b_validation",
+  "auto_submit_payment_entry"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "paybill_number",
+   "fieldtype": "Data",
+   "label": "Paybill Number",
+   "reqd": 1
+  },
+  {
+   "default": "Sandbox",
+   "fieldname": "environment",
+   "fieldtype": "Select",
+   "label": "Environment",
+   "options": "Sandbox\nProduction",
+   "reqd": 1
+  },
+  {
+   "fieldname": "credentials_section",
+   "fieldtype": "Section Break",
+   "label": "Credentials"
+  },
+  {
+   "fieldname": "consumer_key",
+   "fieldtype": "Password",
+   "label": "Consumer Key"
+  },
+  {
+   "fieldname": "consumer_secret",
+   "fieldtype": "Password",
+   "label": "Consumer Secret"
+  },
+  {
+   "fieldname": "passkey",
+   "fieldtype": "Password",
+   "label": "Passkey"
+  },
+  {
+   "fieldname": "callback_secret",
+   "fieldtype": "Password",
+   "label": "Callback Secret / Token"
+  },
+  {
+   "fieldname": "outbound_section",
+   "fieldtype": "Section Break",
+   "label": "Outbound Payments (B2B / B2C)"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_outbound_payments",
+   "fieldtype": "Check",
+   "label": "Enable Outbound Payments"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "initiator_name",
+   "fieldtype": "Data",
+   "label": "Initiator Name"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "initiator_password",
+   "fieldtype": "Password",
+   "label": "Initiator Password"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "security_certificate",
+   "fieldtype": "Code",
+   "label": "Daraja Security Certificate (PEM)"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "b2c_shortcode",
+   "fieldtype": "Data",
+   "label": "B2C Shortcode (defaults to Paybill)"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "max_request_amount",
+   "fieldtype": "Currency",
+   "label": "Max Request Amount"
+  },
+  {
+   "fieldname": "enable_auto_approval",
+   "fieldtype": "Check",
+   "label": "Enable Auto-Approval (below limits)",
+   "default": "0",
+   "depends_on": "enable_outbound_payments",
+   "description": "Requests at or below the Auto-Approve Limit dispatch immediately without an approver, while the requester's daily auto-approved total stays within the per-employee cap."
+  },
+  {
+   "fieldname": "auto_approve_limit",
+   "fieldtype": "Currency",
+   "label": "Auto-Approve Limit (per request)",
+   "depends_on": "enable_auto_approval",
+   "mandatory_depends_on": "enable_auto_approval"
+  },
+  {
+   "fieldname": "daily_auto_limit_per_employee",
+   "fieldtype": "Currency",
+   "label": "Daily Auto-Approved Cap (per employee)",
+   "depends_on": "enable_auto_approval",
+   "mandatory_depends_on": "enable_auto_approval"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "outbound_paid_from_account",
+   "fieldtype": "Link",
+   "label": "Outbound Paid From Account",
+   "options": "Account"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "outbound_mode_of_payment",
+   "fieldtype": "Link",
+   "label": "Outbound Mode of Payment",
+   "options": "Mode of Payment"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "callback_base_url",
+   "fieldtype": "Data",
+   "label": "Callback Base URL (public site URL)"
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "description": "Populated by the balance_result callback after using the Test Initiator (Balance Query) button. Only reachable on a publicly accessible site.",
+   "fieldname": "last_balance_result",
+   "fieldtype": "Small Text",
+   "label": "Last Balance Result",
+   "read_only": 1
+  },
+  {
+   "depends_on": "enable_outbound_payments",
+   "fieldname": "last_balance_checked",
+   "fieldtype": "Datetime",
+   "label": "Last Balance Checked",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accounting_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting"
+  },
+  {
+   "fieldname": "default_mode_of_payment",
+   "fieldtype": "Link",
+   "label": "Default Mode of Payment",
+   "options": "Mode of Payment"
+  },
+  {
+   "fieldname": "paid_to_account",
+   "fieldtype": "Link",
+   "label": "Paid To Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "default_receivable_account",
+   "fieldtype": "Link",
+   "label": "Default Receivable Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "payment_account_mappings",
+   "fieldtype": "Table",
+   "label": "Payment Account Mappings",
+   "options": "M-Pesa Payment Account Mapping"
+  },
+  {
+   "fieldname": "write_off_section",
+   "fieldtype": "Section Break",
+   "label": "Small Difference Write Off"
+  },
+  {
+   "default": "0",
+   "description": "Automatically book small differences caused by M-Pesa whole-shilling payments: invoice shortfalls are written off and small overpayments are recorded as a gain in the Write Off Account.",
+   "fieldname": "enable_small_difference_write_off",
+   "fieldtype": "Check",
+   "label": "Enable Small Difference Write Off"
+  },
+  {
+   "default": "1",
+   "description": "Maximum difference, in either direction, between the payment and the invoice outstanding amount that is booked to the Write Off Account. Overpayments above this are kept as customer credit when Allow Overpayments is enabled.",
+   "fieldname": "max_write_off_difference",
+   "fieldtype": "Currency",
+   "label": "Maximum Write Off Difference"
+  },
+  {
+   "depends_on": "eval:doc.enable_small_difference_write_off",
+   "fieldname": "write_off_account",
+   "fieldtype": "Link",
+   "label": "Write Off Account",
+   "options": "Account"
+  },
+  {
+   "depends_on": "eval:doc.enable_small_difference_write_off",
+   "fieldname": "write_off_cost_center",
+   "fieldtype": "Link",
+   "label": "Write Off Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "default": "1",
+   "fieldname": "allow_partial_payments",
+   "fieldtype": "Check",
+   "label": "Allow Partial Payments"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_overpayments",
+   "fieldtype": "Check",
+   "label": "Allow Overpayments"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_customer_phone_matching",
+   "fieldtype": "Check",
+   "label": "Allow Customer Phone Matching"
+  },
+  {
+   "default": "0",
+   "description": "When enabled, the validation URL rejects unknown or missing account numbers before the customer completes payment. Keep disabled until your customer payment references are clean.",
+   "fieldname": "enable_strict_c2b_validation",
+   "fieldtype": "Check",
+   "label": "Enable Strict C2B Validation"
+  },
+  {
+   "default": "1",
+   "fieldname": "auto_submit_payment_entry",
+   "fieldtype": "Check",
+   "label": "Auto Submit Payment Entry"
+  }
+ ],
+ "issingle": 1,
+ "modified": "2026-07-28 00:00:00.000000",
+ "module": "Swdpay",
+ "name": "M-Pesa Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC"
 }
