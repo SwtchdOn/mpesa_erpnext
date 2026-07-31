@@ -10,6 +10,7 @@ import pytest
 from swdpay.outbound import (
     ALLOWED_TRANSITIONS, assert_transition, validate_payment_request, build_payout_request,
     parse_payout_result, parse_etims_invoice_number, plan_approval, plan_party_resolution,
+    normalize_result_code,
     payout_outcome, handle_payout_callback, reconcile_payout, find_request_by_originator,
     parse_status_result, handle_status_result, plan_receipt_attach,
     approve_and_send, reject_request, send_payment_request,
@@ -154,6 +155,32 @@ def test_parse_payout_result_handles_failure_without_parameters():
                           "OriginatorConversationID": "MPPR-2026-00002", "ConversationID": "AG_x"}}
     parsed = parse_payout_result(payload)
     assert parsed["result_code"] == 2001 and parsed["transaction_id"] is None
+
+
+def test_parse_payout_result_keeps_string_result_code():
+    # Live incident (MPPR-2026-00004): B2B failures carry non-numeric codes; int()
+    # crashed the callback with ValueError and the request stuck in Sending forever.
+    payload = {"Result": {
+        "ResultType": 0, "ResultCode": "SFC_IC0003", "ResultDesc": "Receiver party is invalid",
+        "OriginatorConversationID": "41ea-4818-832d-5f4a879d2f69788",
+        "ConversationID": "AG_20260731_010020290yf40hdox3n5", "TransactionID": "UGV0000000",
+        "ReferenceData": {"ReferenceItem": [
+            {"Key": "QueueTimeoutURL", "Value": "https://internalapi.safaricom.net/mpesa/b2bresults/v1/submit"},
+            {"Key": "Occassion"},
+        ]},
+    }}
+    parsed = parse_payout_result(payload)
+    assert parsed["result_code"] == "SFC_IC0003"
+    assert parsed["result_desc"] == "Receiver party is invalid"
+    assert payout_outcome(parsed) == "Failed"
+
+
+def test_normalize_result_code_variants():
+    assert normalize_result_code(0) == 0
+    assert normalize_result_code("2001") == 2001  # numeric strings become ints
+    assert normalize_result_code("SFC_IC0003") == "SFC_IC0003"
+    assert normalize_result_code(None) is None
+    assert normalize_result_code("  ") is None
 
 
 def test_parse_etims_invoice_number_from_kra_url():
@@ -446,6 +473,45 @@ def test_parse_status_result_originator_falls_back_to_result_level_occasion():
     assert parsed["originator_conversation_id"] == "MPPR-2026-00099"
 
 
+def _status_not_found_payload(occasion_key="Occasion", name="MPPR-2026-00004"):
+    # Real Daraja 2033 shape (live incident): no ResultParameters at all, and the
+    # echoed Occasion nested under ReferenceData.ReferenceItem.
+    return {"Result": {
+        "ResultType": 0, "ResultCode": 2033,
+        "ResultDesc": "The transaction receipt number cannot be found by the specified "
+                      "OriginatorConversationID or ConversationID.",
+        "OriginatorConversationID": "7e0e-479c-8a40-86a06ec145f7347",
+        "ConversationID": "AG_20260731_010018840yq1klz2q47r", "TransactionID": "UGV1000000",
+        "ReferenceData": {"ReferenceItem": {"Key": occasion_key, "Value": name}},
+    }}
+
+
+def test_parse_status_result_2033_not_found_maps_to_failed_via_reference_data():
+    parsed = parse_status_result(_status_not_found_payload())
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00004"
+    assert parsed["result_code"] == 2033
+    assert "cannot be found" in parsed["result_desc"]
+    assert payout_outcome(parsed) == "Failed"
+
+
+def test_parse_status_result_reference_item_accepts_list_and_occassion_spelling():
+    payload = _status_not_found_payload()
+    payload["Result"]["ReferenceData"]["ReferenceItem"] = [
+        {"Key": "QueueTimeoutURL", "Value": "https://internalapi.safaricom.net/mpesa/b2bresults/v1/submit"},
+        {"Key": "Occassion", "Value": "MPPR-2026-00007"},
+    ]
+    parsed = parse_status_result(payload)
+    assert parsed["originator_conversation_id"] == "MPPR-2026-00007"
+    assert parsed["result_code"] == 2033
+
+
+def test_parse_status_result_non_2033_code_without_status_stays_inconclusive():
+    # Any other query-level error (e.g. auth) must remain a no-op, not a Failed.
+    payload = _status_not_found_payload()
+    payload["Result"]["ResultCode"] = 2001
+    assert parse_status_result(payload)["result_code"] is None
+
+
 # --- handle_status_result: routes a status-query result onto reconcile_payout ---
 
 def test_handle_status_result_completed_enqueues_reconcile_without_conversation_check(payout_env):
@@ -462,6 +528,26 @@ def test_handle_status_result_completed_enqueues_reconcile_without_conversation_
     assert job["request_name"] == "MPPR-2026-00001"
     assert job["verify_conversation"] is False
     assert job["parsed"]["result_code"] == 0
+
+
+def test_handle_status_result_2033_resolves_stuck_doc_to_failed(payout_env):
+    # End-to-end for the live incident: doc stuck in Sending, watchdog's status
+    # query answers 2033 → correlate via ReferenceData Occasion → Failed.
+    payout_env.db.docs["MPPR-2026-00004"] = {"status": "Sending", "conversation_id": "AG_dispatch_1"}
+
+    handle_status_result(_status_not_found_payload())
+
+    assert len(payout_env.enqueued) == 1
+    job = payout_env.enqueued[0]
+    assert job["method"] == "swdpay.outbound.reconcile_payout"
+    assert job["request_name"] == "MPPR-2026-00004"
+    assert job["verify_conversation"] is False
+
+    reconcile_payout(job["request_name"], job["parsed"], verify_conversation=False)
+    doc = payout_env.db.docs["MPPR-2026-00004"]
+    assert doc["status"] == "Failed"
+    assert doc["result_code"] == "2033"
+    assert "cannot be found" in doc["error_message"]
 
 
 def test_handle_status_result_inconclusive_logs_and_enqueues_nothing(payout_env):

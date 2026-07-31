@@ -91,6 +91,19 @@ def build_payout_request(request, *, initiator_name, security_credential, shortc
     return {"path": "/mpesa/b2b/v1/paymentrequest", "body": body}
 
 
+def normalize_result_code(code):
+    """Daraja result codes are usually numeric but not always — B2B failures can
+    carry string codes like "SFC_IC0003" ("Receiver party is invalid"). int() on
+    those crashed the callback and left the request stuck in Sending; keep
+    non-numeric codes verbatim (payout_outcome only cares about == 0)."""
+    if code is None:
+        return None
+    text = str(code).strip()
+    if not text:
+        return None
+    return int(text) if text.lstrip("-").isdigit() else text
+
+
 def parse_payout_result(payload):
     result = (payload or {}).get("Result") or {}
     params = {}
@@ -99,11 +112,10 @@ def parse_payout_result(payload):
             params[row["Key"]] = row.get("Value")
 
     receiver = params.get("ReceiverPartyPublicName") or params.get("CreditPartyPublicName")
-    code = result.get("ResultCode")
     return {
         "originator_conversation_id": result.get("OriginatorConversationID"),
         "conversation_id": result.get("ConversationID"),
-        "result_code": int(code) if code is not None else None,
+        "result_code": normalize_result_code(result.get("ResultCode")),
         "result_desc": result.get("ResultDesc"),
         "transaction_id": result.get("TransactionID") or params.get("TransactionReceipt"),
         "receiver_public_name": receiver,
@@ -712,9 +724,8 @@ def parse_balance_result(payload):
         if isinstance(row, dict) and row.get("Key"):
             params[row["Key"]] = row.get("Value")
 
-    code = result.get("ResultCode")
     return {
-        "result_code": int(code) if code is not None else None,
+        "result_code": normalize_result_code(result.get("ResultCode")),
         "result_desc": result.get("ResultDesc"),
         "account_balance": params.get("AccountBalance"),
     }
@@ -768,18 +779,37 @@ def parse_status_result(payload):
         if isinstance(row, dict) and row.get("Key"):
             params[row["Key"]] = row.get("Value")
 
+    # A "not found" result (code 2033) carries no ResultParameters at all — the
+    # echoed Occasion lives under Result.ReferenceData.ReferenceItem instead
+    # (a single dict or a list, and sometimes Safaricom's "Occassion" spelling).
+    reference = {}
+    items = (result.get("ReferenceData") or {}).get("ReferenceItem") or []
+    if isinstance(items, dict):
+        items = [items]
+    for row in items:
+        if isinstance(row, dict) and row.get("Key"):
+            reference[row["Key"]] = row.get("Value")
+
     originator = (
         params.get("OriginatorConversationID")
         or params.get("OriginalConversationID")
         or params.get("Occasion")
         or result.get("Occasion")
+        or reference.get("Occasion")
+        or reference.get("Occassion")
     )
     status_text = str(params.get("TransactionStatus") or "").strip().lower()
     receipt = params.get("ReceiptNo") or params.get("TransactionReceipt")
+    top_code = normalize_result_code(result.get("ResultCode"))
     if status_text in ("completed", "complete", "success", "successful"):
         outcome_code = 0
     elif status_text in ("failed", "cancelled", "canceled", "declined", "expired"):
         outcome_code = 1
+    elif top_code == 2033:
+        # "The transaction receipt number cannot be found by the specified
+        # OriginatorConversationID or ConversationID" — Daraja has no record of
+        # the payout, so nothing was dispatched or paid: conclusively Failed.
+        outcome_code = top_code
     else:
         outcome_code = None  # unknown → no-op
 
