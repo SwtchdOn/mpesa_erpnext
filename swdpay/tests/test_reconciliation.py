@@ -1,10 +1,13 @@
 import sys
 import types
 
+import pytest
+
 # Use the canonical frappe stub registered by conftest.py
 frappe_stub = sys.modules["frappe"]
 StubValidationError = frappe_stub.StubValidationError
 
+from swdpay import reconciliation
 from swdpay.qr import format_qr_amount, mpesa_qr_payload
 from swdpay.reconciliation import (
     get_phone_variants,
@@ -14,6 +17,7 @@ from swdpay.reconciliation import (
     normalize_payload,
     normalize_phone,
     plan_reference_allocation,
+    reconcile_transaction,
 )
 
 
@@ -206,3 +210,249 @@ def test_existing_payment_entry_lookup_uses_reference_no(monkeypatch):
             },
         )
     ]
+
+
+# --- Automatic Sales Order matching in reconcile_transaction ----------------
+#
+# The flow tests below stub only the frappe surface reconcile_transaction and the
+# matching validators touch (frappe.db.exists, frappe.get_doc, frappe.get_single)
+# and replace create_payment_entry so they assert which match path was taken,
+# not ERPNext's Payment Entry mechanics.
+
+
+class _Doc(types.SimpleNamespace):
+    """Minimal frappe Document stand-in: .get(), .save() and .append()."""
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def save(self, ignore_permissions=False):
+        pass
+
+    def append(self, fieldname, row):
+        getattr(self, fieldname).append(row)
+
+
+def _make_settings(**overrides):
+    settings = types.SimpleNamespace(
+        company="Switched On",
+        allow_partial_payments=True,
+        allow_overpayments=False,
+        allow_customer_phone_matching=False,
+        enable_small_difference_write_off=False,
+        max_write_off_difference=0,
+        auto_submit_payment_entry=True,
+    )
+    for key, value in overrides.items():
+        setattr(settings, key, value)
+    return settings
+
+
+def _make_order(**overrides):
+    order = _Doc(
+        name="SAL-ORD-2026-00007",
+        docstatus=1,
+        company="Switched On",
+        customer="CUST-0001",
+        per_billed=0,
+        base_grand_total=10000,
+        grand_total=10000,
+        advance_paid=0,
+    )
+    for key, value in overrides.items():
+        setattr(order, key, value)
+    return order
+
+
+def _make_transaction(**overrides):
+    transaction = _Doc(
+        name="MPTX-0001",
+        status="New",
+        mpesa_receipt_number="UEOCI5CWU6",
+        bill_ref_number="SAL-ORD-2026-00007",
+        amount=10000,
+        phone_number=None,
+        customer=None,
+        sales_invoice=None,
+        sales_order=None,
+        payment_entry=None,
+        error_message=None,
+        transaction_date=None,
+        paybill_number=None,
+        reconciliation_attempt_count=0,
+        last_reconciliation_attempt=None,
+        reconciliation_attempts=[],
+        flags=types.SimpleNamespace(),
+    )
+    for key, value in overrides.items():
+        setattr(transaction, key, value)
+    return transaction
+
+
+def _install_reconcile_env(monkeypatch, transaction, settings, docs):
+    """docs maps (doctype, name) to document stubs; returns the list of
+    create_payment_entry calls made by reconcile_transaction."""
+    created = []
+
+    def fake_exists(doctype, name):
+        if isinstance(name, dict):
+            # get_existing_payment_entry_for_receipt lookup — no prior entry
+            return None
+        return name if (doctype, name) in docs else None
+
+    def fake_get_doc(doctype, name):
+        if doctype == "M-Pesa Transaction" and name == transaction.name:
+            return transaction
+        if (doctype, name) in docs:
+            return docs[(doctype, name)]
+        raise StubValidationError(f"{doctype} {name} not found")
+
+    def fake_create_payment_entry(txn, txn_settings, mapping, invoice=None, order=None, customer=None):
+        created.append({"invoice": invoice, "order": order, "customer": customer})
+        txn.payment_entry = "ACC-PAY-2026-00001"
+        return types.SimpleNamespace(name="ACC-PAY-2026-00001")
+
+    monkeypatch.setattr(frappe_stub, "db", types.SimpleNamespace(exists=fake_exists))
+    monkeypatch.setattr(frappe_stub, "get_doc", fake_get_doc)
+    monkeypatch.setattr(frappe_stub, "get_single", lambda doctype: settings)
+    monkeypatch.setattr(
+        reconciliation,
+        "get_payment_account_mapping",
+        lambda txn, txn_settings: {"mode_of_payment": "M-Pesa", "paid_to_account": "M-Pesa - SO"},
+    )
+    monkeypatch.setattr(
+        reconciliation,
+        "get_sales_order_exchange_rate",
+        lambda order, receivable_account=None: 1,
+    )
+    monkeypatch.setattr(reconciliation, "create_payment_entry", fake_create_payment_entry)
+    return created
+
+
+def test_reconcile_transaction_matches_sales_order_reference(monkeypatch):
+    order = _make_order()
+    transaction = _make_transaction()
+    created = _install_reconcile_env(
+        monkeypatch,
+        transaction,
+        _make_settings(),
+        {("Sales Order", order.name): order},
+    )
+
+    result = reconcile_transaction("MPTX-0001")
+
+    assert created == [{"invoice": None, "order": order, "customer": "CUST-0001"}]
+    assert result.sales_order == "SAL-ORD-2026-00007"
+    assert result.sales_invoice is None
+    assert result.customer == "CUST-0001"
+    assert result.status == "Reconciled"
+    assert result.error_message is None
+
+
+@pytest.mark.parametrize(
+    "order_overrides",
+    [
+        {"docstatus": 2},  # cancelled
+        {"company": "Other Company"},  # wrong company
+        {"advance_paid": 10000},  # fully paid via prior advances
+        {"per_billed": 100},  # fully billed
+    ],
+)
+def test_reconcile_transaction_invalid_sales_order_falls_through_to_phone(monkeypatch, order_overrides):
+    order = _make_order(**order_overrides)
+    transaction = _make_transaction(phone_number="254712345678")
+    created = _install_reconcile_env(
+        monkeypatch,
+        transaction,
+        _make_settings(allow_customer_phone_matching=True),
+        {("Sales Order", order.name): order},
+    )
+    monkeypatch.setattr(reconciliation, "_find_customers_by_phone", lambda phone: ["CUST-PHONE"])
+
+    result = reconcile_transaction("MPTX-0001")
+
+    assert created == [{"invoice": None, "order": None, "customer": "CUST-PHONE"}]
+    assert result.sales_order is None
+    assert result.sales_invoice is None
+    assert result.customer == "CUST-PHONE"
+    assert result.status == "Reconciled"
+
+
+def test_reconcile_transaction_prefers_sales_invoice_over_sales_order(monkeypatch):
+    invoice = _Doc(
+        name="ACC-SINV-2026-00045",
+        docstatus=1,
+        company="Switched On",
+        customer="CUST-INV",
+        outstanding_amount=10000,
+    )
+    # a Sales Order under the same reference must lose to the invoice match
+    order = _make_order(name=invoice.name)
+    transaction = _make_transaction(bill_ref_number=invoice.name)
+    created = _install_reconcile_env(
+        monkeypatch,
+        transaction,
+        _make_settings(),
+        {
+            ("Sales Invoice", invoice.name): invoice,
+            ("Sales Order", order.name): order,
+        },
+    )
+    monkeypatch.setattr(
+        reconciliation,
+        "get_invoice_outstanding_in_company_currency",
+        lambda inv: float(inv.outstanding_amount),
+    )
+
+    result = reconcile_transaction("MPTX-0001")
+
+    assert created == [{"invoice": invoice, "order": None, "customer": "CUST-INV"}]
+    assert result.sales_invoice == invoice.name
+    assert result.sales_order is None
+    assert result.status == "Reconciled"
+
+
+def test_get_valid_sales_order_throws_when_asked(monkeypatch):
+    order = _make_order(docstatus=2)
+    transaction = _make_transaction()
+    _install_reconcile_env(
+        monkeypatch,
+        transaction,
+        _make_settings(),
+        {("Sales Order", order.name): order},
+    )
+
+    with pytest.raises(StubValidationError):
+        reconciliation._get_valid_sales_order(transaction, _make_settings(), throw=True)
+
+    assert reconciliation._get_valid_sales_order(transaction, _make_settings(), throw=False) is None
+
+
+def test_manual_sales_order_path_uses_shared_validator(monkeypatch):
+    order = _make_order(advance_paid=10000)
+    transaction = _make_transaction(bill_ref_number=None)
+    _install_reconcile_env(
+        monkeypatch,
+        transaction,
+        _make_settings(),
+        {("Sales Order", order.name): order},
+    )
+
+    with pytest.raises(StubValidationError):
+        reconciliation._get_manual_sales_order(transaction, _make_settings(), sales_order=order.name)
+
+    valid_order = _make_order()
+    monkeypatch.setattr(
+        frappe_stub,
+        "get_doc",
+        lambda doctype, name: valid_order,
+    )
+    monkeypatch.setattr(
+        frappe_stub,
+        "db",
+        types.SimpleNamespace(exists=lambda doctype, name: name if name == valid_order.name else None),
+    )
+    manual_order = reconciliation._get_manual_sales_order(
+        transaction, _make_settings(), sales_order=valid_order.name
+    )
+    assert manual_order is valid_order

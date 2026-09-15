@@ -173,9 +173,17 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
 
         payment_mapping = get_payment_account_mapping(transaction, settings)
         invoice = _get_valid_sales_invoice(transaction, settings, throw=False)
-        customer = invoice.customer if invoice else _get_valid_customer_by_phone(transaction, settings)
+        order = None if invoice else _get_valid_sales_order(transaction, settings, throw=False)
+        customer = (
+            invoice.customer
+            if invoice
+            else order.customer
+            if order
+            else _get_valid_customer_by_phone(transaction, settings)
+        )
 
         transaction.sales_invoice = invoice.name if invoice else None
+        transaction.sales_order = order.name if order else None
         transaction.customer = customer
         transaction.status = STATUS_MATCHED
         transaction.error_message = None
@@ -186,6 +194,7 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
             settings,
             payment_mapping,
             invoice=invoice,
+            order=order,
             customer=customer,
         )
         transaction.status = STATUS_RECONCILED
@@ -671,6 +680,22 @@ def _get_manual_sales_invoice(transaction, settings, sales_invoice=None):
     return invoice
 
 
+def _get_valid_sales_order(transaction, settings, throw=True):
+    def fail(message):
+        if throw:
+            frappe.throw(message)
+        return None
+
+    if not transaction.bill_ref_number:
+        return fail("Bill Ref Number is required")
+
+    order_name = frappe.db.exists("Sales Order", transaction.bill_ref_number)
+    if not order_name:
+        return fail(f"No Sales Order found for account number {transaction.bill_ref_number}")
+
+    return _validate_sales_order(order_name, transaction, settings, fail)
+
+
 def _get_manual_sales_order(transaction, settings, sales_order=None):
     sales_order = sales_order or transaction.get("sales_order")
     if not sales_order:
@@ -680,27 +705,35 @@ def _get_manual_sales_order(transaction, settings, sales_order=None):
     if not order_name:
         frappe.throw(f"Sales Order {sales_order} was not found")
 
+    return _validate_sales_order(order_name, transaction, settings, frappe.throw)
+
+
+def _validate_sales_order(order_name, transaction, settings, fail):
+    """Shared Sales Order checks for the automatic and manual matching paths.
+
+    fail either raises (frappe.throw for the manual path) or returns None so
+    automatic reconciliation can fall through to customer phone matching."""
     order = frappe.get_doc("Sales Order", order_name)
 
     if order.docstatus != 1:
-        frappe.throw(f"Sales Order {order.name} is not submitted")
+        return fail(f"Sales Order {order.name} is not submitted")
 
     if order.company != settings.company:
-        frappe.throw(f"Sales Order {order.name} belongs to company {order.company}, not {settings.company}")
+        return fail(f"Sales Order {order.name} belongs to company {order.company}, not {settings.company}")
 
     if flt(order.per_billed) >= 100:
-        frappe.throw(f"Sales Order {order.name} is already fully billed")
+        return fail(f"Sales Order {order.name} is already fully billed")
 
     if flt(transaction.amount) <= 0:
-        frappe.throw("Amount is zero")
+        return fail("Amount is zero")
 
     exchange_rate = get_sales_order_exchange_rate(order)
     outstanding = flt(_get_sales_order_outstanding_amount(order, exchange_rate) * exchange_rate, 2)
     if outstanding <= 0:
-        frappe.throw(f"Sales Order {order.name} is already fully paid")
+        return fail(f"Sales Order {order.name} is already fully paid")
 
     if flt(transaction.amount) > outstanding and not settings.allow_overpayments:
-        frappe.throw("Payment amount exceeds outstanding amount")
+        return fail("Payment amount exceeds outstanding amount")
 
     return order
 
@@ -754,7 +787,7 @@ def _validation_result(settings, is_valid, message):
 
 def _get_valid_customer_by_phone(transaction, settings):
     if not settings.allow_customer_phone_matching:
-        frappe.throw(f"No Sales Invoice found for account number {transaction.bill_ref_number}")
+        frappe.throw(f"No Sales Invoice or Sales Order found for account number {transaction.bill_ref_number}")
 
     if flt(transaction.amount) <= 0:
         frappe.throw("Amount is zero")

@@ -122,9 +122,22 @@ The invoice must be:
 
 If valid, the Payment Entry is allocated to the Sales Invoice.
 
+### Sales Order Matching
+
+If no Sales Invoice matches, the app checks whether `BillRefNumber` matches a Sales Order name — the reference the QR code renders on Sales Orders.
+
+The order must be:
+
+- Submitted.
+- In the configured Company.
+- Not fully billed and not fully paid (order total less existing advances).
+- Not overpaid unless overpayments are explicitly enabled.
+
+If valid, the receipt is posted as a Customer advance against the Sales Order (see Payment Entry Details). An order that fails these checks falls through to Customer phone matching instead of blocking the transaction.
+
 ### Customer Phone Matching
 
-If no Sales Invoice matches and `Allow Customer Phone Matching` is enabled, the app normalizes the M-Pesa phone number and checks `Customer.mobile_no` and `Customer.phone`.
+If no Sales Invoice or Sales Order matches and `Allow Customer Phone Matching` is enabled, the app normalizes the M-Pesa phone number and checks `Customer.mobile_no` and `Customer.phone`.
 
 It also checks linked Contact records where the Contact is linked to a Customer.
 
@@ -178,7 +191,7 @@ The validation endpoint checks:
 
 - Amount is greater than zero.
 - Sales Invoice references are submitted, in the configured Company, outstanding, and not overpaid unless overpayments are enabled or the excess is within the small difference write-off maximum.
-- Sales Order and Quotation references are accepted for downstream/manual handling.
+- Sales Order references are accepted and reconcile automatically as advances against the order; Quotation references are accepted for downstream/manual handling.
 - Customer phone fallback is accepted when enabled.
 
 If `Enable Strict C2B Validation` is disabled, unknown or missing account numbers are accepted so the payment can be reviewed after confirmation. If strict validation is enabled, unknown or missing account numbers are rejected.
@@ -302,11 +315,11 @@ For invoice matches:
 - Small configured shortfalls: full invoice outstanding allocation plus a deductions/loss row against the configured write-off account and cost center
 - Small configured overpayments: full invoice outstanding allocation plus a negative deductions/gain row against the configured write-off account and cost center
 
-For manual Sales Order matches:
+For Sales Order matches (automatic or manual):
 
 - The receipt is posted as a Customer advance against the submitted Sales Order.
 - The Sales Order reference allocation is limited to the order total less existing advances, in the receivable account currency.
-- The selected Sales Order and resulting Payment Entry are linked back to the M-Pesa Transaction.
+- The matched Sales Order and resulting Payment Entry are linked back to the M-Pesa Transaction.
 
 ### Multi-Currency References
 
