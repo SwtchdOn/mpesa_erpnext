@@ -4,6 +4,8 @@ from datetime import datetime
 import frappe
 from frappe.utils import flt, getdate, now_datetime
 
+from swdpay.callback_user import callback_job_user
+
 
 STATUS_NEW = "New"
 STATUS_MATCHED = "Matched"
@@ -93,24 +95,9 @@ def enqueue_reconciliation(transaction_name):
 
 
 def reconcile_from_callback(transaction_name):
-    """The job a C2B confirmation queues. Never whitelisted.
-
-    A background job runs as the user who queued it, and Safaricom's callback is
-    Guest (its token is checked in api.callbacks). ERPNext checks permissions
-    while a Payment Entry is built and validated (get_payment_entry,
-    get_account_details), whatever ignore_permissions says, so as Guest the
-    payment can't be created. Only then is the job run as Administrator, as
-    Frappe's own scheduled jobs are: a person's retry keeps their permissions.
-    ERPNext still refuses Administrator a posting date in frozen accounts."""
-    caller = frappe.session.user
-    if caller != "Guest":
+    """The job a C2B confirmation queues (callback_user says why). Never whitelisted."""
+    with callback_job_user():
         return reconcile_transaction(transaction_name, source="Background Job")
-
-    frappe.set_user("Administrator")
-    try:
-        return reconcile_transaction(transaction_name, source="Background Job")
-    finally:
-        frappe.set_user(caller)
 
 
 def process_payload(payload, auto_commit=False):

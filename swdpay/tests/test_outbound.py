@@ -521,7 +521,7 @@ def test_handle_status_result_completed_enqueues_reconcile_without_conversation_
 
     assert len(payout_env.enqueued) == 1
     job = payout_env.enqueued[0]
-    assert job["method"] == "swdpay.outbound.reconcile_payout"
+    assert job["method"] == "swdpay.outbound.reconcile_payout_from_callback"
     assert job["job_id"] == "swdpay-payout-reconcile-MPPR-2026-00001-status"
     assert job["deduplicate"] is True
     assert job["enqueue_after_commit"] is True
@@ -539,7 +539,7 @@ def test_handle_status_result_2033_resolves_stuck_doc_to_failed(payout_env):
 
     assert len(payout_env.enqueued) == 1
     job = payout_env.enqueued[0]
-    assert job["method"] == "swdpay.outbound.reconcile_payout"
+    assert job["method"] == "swdpay.outbound.reconcile_payout_from_callback"
     assert job["request_name"] == "MPPR-2026-00004"
     assert job["verify_conversation"] is False
 
