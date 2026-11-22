@@ -537,7 +537,7 @@ def handle_payout_callback(payload, timeout=False):
 
     frappe.db.set_value("M-Pesa Payment Request", name, "raw_result", json.dumps(payload, default=str))
     frappe.enqueue(
-        "swdpay.outbound.reconcile_payout", queue="short",
+        "swdpay.outbound.reconcile_payout_from_callback", queue="short",
         # Separate ids per callback kind: a queued TIMEOUT job must not dedup-swallow
         # the later RESULT enqueue (and vice versa) for the same request.
         job_id=f"swdpay-payout-reconcile-{name}-{'timeout' if timeout else 'result'}",
@@ -545,6 +545,14 @@ def handle_payout_callback(payload, timeout=False):
         enqueue_after_commit=True,  # don't let the worker start before the raw_result commit lands
         request_name=name, parsed=parsed, timeout=timeout,
     )
+
+
+def reconcile_payout_from_callback(request_name, parsed, timeout=False, verify_conversation=True):
+    """The job a payout or status callback queues (callback_user says why). Never whitelisted."""
+    from swdpay.callback_user import callback_job_user
+
+    with callback_job_user():
+        return reconcile_payout(request_name, parsed, timeout=timeout, verify_conversation=verify_conversation)
 
 
 def reconcile_payout(request_name, parsed, timeout=False, verify_conversation=True):
@@ -845,7 +853,7 @@ def handle_status_result(payload):
         frappe.log_error(title=f"swdpay status result inconclusive: {name}", message=json.dumps(payload, default=str))
         return
     frappe.enqueue(
-        "swdpay.outbound.reconcile_payout", queue="short",
+        "swdpay.outbound.reconcile_payout_from_callback", queue="short",
         job_id=f"swdpay-payout-reconcile-{name}-status", deduplicate=True, enqueue_after_commit=True,
         request_name=name, parsed=parsed, verify_conversation=False,
     )

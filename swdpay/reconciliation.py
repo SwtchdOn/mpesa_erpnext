@@ -4,6 +4,8 @@ from datetime import datetime
 import frappe
 from frappe.utils import flt, getdate, now_datetime
 
+from swdpay.callback_user import callback_job_user
+
 
 STATUS_NEW = "New"
 STATUS_MATCHED = "Matched"
@@ -85,12 +87,17 @@ def save_transaction_from_payload(payload):
 
 def enqueue_reconciliation(transaction_name):
     frappe.enqueue(
-        "swdpay.reconciliation.reconcile_transaction",
+        "swdpay.reconciliation.reconcile_from_callback",
         queue="short",
         transaction_name=transaction_name,
-        source="Background Job",
         enqueue_after_commit=True,
     )
+
+
+def reconcile_from_callback(transaction_name):
+    """The job a C2B confirmation queues (callback_user says why). Never whitelisted."""
+    with callback_job_user():
+        return reconcile_transaction(transaction_name, source="Background Job")
 
 
 def process_payload(payload, auto_commit=False):
@@ -203,11 +210,13 @@ def reconcile_transaction(transaction_name, manual=False, source=None):
         _safe_record_reconciliation_attempt(transaction, source, "Success", f"Payment Entry {payment_entry.name} created")
         return transaction
     except Exception as exc:
+        # A bare PermissionError has no text: say at least what it was.
+        error = str(exc) or type(exc).__name__
         transaction.status = STATUS_EXCEPTION
-        transaction.error_message = str(exc)
+        transaction.error_message = error
         transaction.flags.skip_payment_entry_completion = True
         transaction.save(ignore_permissions=True)
-        _safe_record_reconciliation_attempt(transaction, source, "Exception", str(exc))
+        _safe_record_reconciliation_attempt(transaction, source, "Exception", error)
         frappe.log_error(frappe.get_traceback(), f"M-Pesa reconciliation failed: {transaction.name}")
         if manual:
             raise
